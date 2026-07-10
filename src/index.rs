@@ -43,9 +43,18 @@ impl Index {
         provides.insert("python.org", vec!["python3", "python", "pip3", "pip", "venv"]);
         companions.insert("python.org", vec![]);
 
+        // rust-lang.org's bottle ships rustc/rustfmt/clippy/rust-analyzer/
+        // rustdoc — but NOT cargo (or rustup). Verified live: `bin/` has no
+        // `cargo` at all. pkgx models cargo as a separate nested project
+        // (`rust-lang.org/cargo`), so it's a companion, not bundled.
         aliases.insert("rust",    "rust-lang.org");
-        provides.insert("rust-lang.org", vec!["rustc", "cargo", "rustup", "rustdoc"]);
-        companions.insert("rust-lang.org", vec![]);
+        provides.insert("rust-lang.org", vec!["rustc", "rustfmt", "rustdoc", "rust-analyzer"]);
+        companions.insert("rust-lang.org", vec!["rust-lang.org/cargo"]);
+        // cargo itself dynamically links openssl 1.1 (verified via ldd on a
+        // real downloaded bottle, the same libcrypto/libssl.so.1.1 gap node
+        // hit — see the nodejs.org companions comment above).
+        companions.insert("rust-lang.org/cargo", vec!["openssl@^1.1"]);
+        provides.insert("rust-lang.org/cargo", vec!["cargo"]);
 
         aliases.insert("go",      "golang.org");
         provides.insert("golang.org", vec!["go", "gofmt"]);

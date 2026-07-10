@@ -15,7 +15,9 @@
 //! local cache → [`inventory`] picks a version from the remote index if
 //! nothing cached → [`install`] downloads and extracts the bottle →
 //! [`env::compose_env`] builds the `PATH`/`LD_LIBRARY_PATH`/etc. environment →
-//! the CLI (`main.rs`, via [`index::Index`] for alias resolution) execs or
+//! [`sandbox::sandboxed_command`] wraps the actual exec under `bwrap` (real
+//! process/mount isolation, not just an isolated toolchain version) → the
+//! CLI (`main.rs`, via [`index::Index`] for alias resolution) execs or
 //! prints it.
 
 pub mod cellar;
@@ -24,7 +26,9 @@ pub mod env;
 pub mod index;
 pub mod install;
 pub mod inventory;
+pub mod project;
 pub mod resolve;
+pub mod sandbox;
 pub mod types;
 
 pub use config::Config;

@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::path::Path;
 
 mod cellar;
 mod config;
@@ -12,7 +13,9 @@ mod env;
 mod index;
 mod install;
 mod inventory;
+mod project;
 mod resolve;
+mod sandbox;
 mod types;
 
 use config::Config;
@@ -31,12 +34,16 @@ enum Command {
     ///
     /// Usage: buckets run node@20 -- script.js [args...]
     Run {
-        /// Runtime spec(s) ��� can specify multiple like "node@20" "python@3.11"
+        /// Runtime spec(s) — can specify multiple like "node@20" "python@3.11"
         specs: Vec<String>,
 
         /// Command and arguments to run
         #[arg(last = true, required = true)]
         command: Vec<String>,
+
+        /// Run unsandboxed (plain subprocess, no bwrap containment).
+        #[arg(long)]
+        no_sandbox: bool,
     },
 
     /// Open an interactive shell with the runtime in PATH.
@@ -47,6 +54,10 @@ enum Command {
         /// Shell to use (default: current SHELL)
         #[arg(short, long)]
         shell: Option<String>,
+
+        /// Run unsandboxed (plain subprocess, no bwrap containment).
+        #[arg(long)]
+        no_sandbox: bool,
     },
 
     /// Print the composed environment as shell exports or JSON.
@@ -72,6 +83,32 @@ enum Command {
 
     /// List cached installations.
     List,
+
+    /// Clone (if a git URL) or use (if a local path) a source repo, detect
+    /// its build system, resolve the toolchain it needs, and build it in a
+    /// sandboxed bucket — without touching the host.
+    ///
+    /// Usage:
+    ///   buckets build /path/to/repo
+    ///   buckets build https://github.com/owner/repo
+    ///   buckets build . --test --run
+    Build {
+        /// Git URL or local path.
+        path_or_url: String,
+
+        /// Also run the detected test command after a successful build.
+        #[arg(long)]
+        test: bool,
+
+        /// Also run the detected run command after a successful build
+        /// (and after tests, if --test was also given).
+        #[arg(long)]
+        run: bool,
+
+        /// Build/test/run unsandboxed (plain subprocess, no bwrap containment).
+        #[arg(long)]
+        no_sandbox: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -80,16 +117,20 @@ fn main() -> Result<()> {
     let index = Index::builtin();
 
     match cli.command {
-        Command::Run { specs, command } => cmd_run(&specs, &command, &config, &index),
-        Command::Shell { specs, shell } => cmd_shell(&specs, shell.as_deref(), &config, &index),
+        Command::Run { specs, command, no_sandbox } => cmd_run(&specs, &command, no_sandbox, &config, &index),
+        Command::Shell { specs, shell, no_sandbox } => cmd_shell(&specs, shell.as_deref(), no_sandbox, &config, &index),
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
         Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
+        Command::Build { path_or_url, test, run, no_sandbox } => {
+            cmd_build(&path_or_url, test, run, no_sandbox, &config, &index)
+        }
     }
 }
 
-/// Run a command with the resolved runtime environment.
-fn cmd_run(specs: &[String], command: &[String], config: &Config, index: &Index) -> Result<()> {
+/// Run a command with the resolved runtime environment, sandboxed via
+/// `bwrap` unless `no_sandbox` is set (see `sandbox.rs`).
+fn cmd_run(specs: &[String], command: &[String], no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
     if specs.is_empty() {
         anyhow::bail!("At least one spec is required (e.g. 'node@20')");
     }
@@ -99,11 +140,28 @@ fn cmd_run(specs: &[String], command: &[String], config: &Config, index: &Index)
 
     let (program, args) = command.split_first().context("No command specified")?;
 
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(args);
+    let mut cmd = if no_sandbox {
+        let mut c = std::process::Command::new(program);
+        c.args(args);
+        c
+    } else {
+        let cwd = std::env::current_dir()?;
+        let profile = sandbox::SandboxProfile {
+            // The invocation cwd must be rw-bound: `--chdir` needs it to
+            // exist inside bwrap's fresh mount namespace, and the common
+            // case (`buckets run node@20 -- node script.js`) reads/writes
+            // files right there.
+            project_dir: Some(cwd.clone()),
+            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            allow_network: false,
+        };
+        sandbox::sandboxed_command(program, args, &cwd, &resolved.env, &profile)
+    };
 
-    for (key, value) in &resolved.env {
-        cmd.env(key, value);
+    if no_sandbox {
+        for (key, value) in &resolved.env {
+            cmd.env(key, value);
+        }
     }
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -121,8 +179,9 @@ fn cmd_run(specs: &[String], command: &[String], config: &Config, index: &Index)
     Ok(())
 }
 
-/// Open an interactive shell with the runtime in PATH.
-fn cmd_shell(specs: &[String], shell: Option<&str>, config: &Config, index: &Index) -> Result<()> {
+/// Open an interactive shell with the runtime in PATH, sandboxed via
+/// `bwrap` unless `no_sandbox` is set (see `sandbox.rs`).
+fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
     if specs.is_empty() {
         anyhow::bail!("At least one spec is required (e.g. 'node@20')");
     }
@@ -134,14 +193,25 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, config: &Config, index: &Ind
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "/bin/sh".to_string());
 
-    let mut cmd = std::process::Command::new(&shell_program);
-
-    for (key, value) in &resolved.env {
-        cmd.env(key, value);
-    }
-
     let bucket_name = specs.join("+");
     let bucket_prompt = format!("[{}] ", bucket_name);
+
+    let mut cmd = if no_sandbox {
+        let mut c = std::process::Command::new(&shell_program);
+        for (key, value) in &resolved.env {
+            c.env(key, value);
+        }
+        c
+    } else {
+        let cwd = std::env::current_dir()?;
+        let profile = sandbox::SandboxProfile {
+            project_dir: Some(cwd.clone()),
+            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            allow_network: false,
+        };
+        sandbox::sandboxed_command(&shell_program, &[], &cwd, &resolved.env, &profile)
+    };
+
     cmd.env("BUCKET_PROMPT", &bucket_prompt);
     if shell_program.contains("bash") || shell_program.contains("zsh") {
         cmd.env("PS1", format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "));
@@ -245,5 +315,96 @@ fn cmd_list(config: &Config) -> Result<()> {
         println!("  Cache dir: {}", cache_dir.display());
     }
 
+    Ok(())
+}
+
+/// Clone/use a source repo, detect its build system, resolve the toolchain
+/// it needs, and run build (+ optionally test, run) sandboxed against it.
+fn cmd_build(path_or_url: &str, test: bool, run: bool, no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
+    let (source_dir, is_temp) = project::resolve_source(path_or_url)?;
+    let mut plan = project::detect(&source_dir)
+        .with_context(|| format!("Failed to detect a build system in {}", source_dir.display()))?;
+    plan.is_temp = is_temp;
+
+    eprintln!(
+        "▶ detected {} project — toolchain: {}",
+        source_dir.display(),
+        plan.toolchain_specs.join(", ")
+    );
+
+    let resolved = resolve::resolve_multi(&plan.toolchain_specs, config, index)
+        .with_context(|| format!("Failed to resolve toolchain: {}", plan.toolchain_specs.join(", ")))?;
+
+    let outcome = (|| -> Result<()> {
+        run_project_step("build", &plan.build_cmd, &plan.source_dir, no_sandbox, &resolved)?;
+
+        if test {
+            match &plan.test_cmd {
+                Some(cmd) => run_project_step("test", cmd, &plan.source_dir, no_sandbox, &resolved)?,
+                None => eprintln!("⚠ --test requested but no test command was detected for this project"),
+            }
+        }
+
+        if run {
+            match &plan.run_cmd {
+                Some(cmd) => run_project_step("run", cmd, &plan.source_dir, no_sandbox, &resolved)?,
+                None => eprintln!("⚠ --run requested but no run command was detected for this project"),
+            }
+        }
+
+        Ok(())
+    })();
+
+    if plan.is_temp {
+        match &outcome {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&plan.source_dir);
+            }
+            Err(_) => {
+                eprintln!("⚠ build failed — leaving the clone at {} for inspection", plan.source_dir.display());
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Run one step (build/test/run) of a `ProjectPlan`, sandboxed unless
+/// `no_sandbox`. Network is allowed — build commands need their package
+/// registries (crates.io, npm, ...), unlike plain `run`/`shell`.
+fn run_project_step(
+    label: &str,
+    command: &[String],
+    project_dir: &Path,
+    no_sandbox: bool,
+    resolved: &types::ResolvedEnvironment,
+) -> Result<()> {
+    let (program, args) = command.split_first().context("empty command")?;
+
+    let mut cmd = if no_sandbox {
+        let mut c = std::process::Command::new(program);
+        c.args(args).current_dir(project_dir);
+        for (key, value) in &resolved.env {
+            c.env(key, value);
+        }
+        c
+    } else {
+        let profile = sandbox::SandboxProfile {
+            project_dir: Some(project_dir.to_path_buf()),
+            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            allow_network: true,
+        };
+        sandbox::sandboxed_command(program, args, project_dir, &resolved.env, &profile)
+    };
+
+    cmd.stdin(std::process::Stdio::inherit());
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
+
+    eprintln!("▶ {label}: {}", command.join(" "));
+    let status = cmd.status().with_context(|| format!("Failed to execute {program}"))?;
+    if !status.success() {
+        anyhow::bail!("{label} failed (exit {})", status.code().unwrap_or(1));
+    }
     Ok(())
 }

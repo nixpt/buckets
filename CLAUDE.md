@@ -17,18 +17,32 @@ protocol — see the README's "Features borrowed from pkgx" section.
 ## Modules
 
 `types` (spec/package/installation types) → `index` (alias resolution) →
-`resolve` (top-level pipeline) → `cellar` (cache inspection) → `inventory`
-(remote version lookup) → `install` (download/extract) → `env` (compose
-PATH/etc.) → `main` (the `buckets` CLI, the only consumer of all of the
-above). Full pipeline description in `src/lib.rs`'s crate doc.
+`resolve` (top-level pipeline, transitive companion expansion) → `cellar`
+(cache inspection) → `inventory` (remote version lookup) → `install`
+(download/extract) → `env` (compose PATH/etc.) → `sandbox` (bwrap process
+isolation — real containment, not just an isolated toolchain version) →
+`project` (git-clone/local-path source resolution + build-system
+detection for `buckets build`) → `main` (the `buckets` CLI, the only
+consumer of all of the above). Full pipeline description in `src/lib.rs`'s
+crate doc.
+
+Live-testing this project against real dist-server requests and real
+builds has repeatedly found bugs `cargo test`'s pure-unit-level suite
+can't see (wrong URL formats, missing/unpinned companions, non-semver
+versions, DNS/sandbox binding gaps) — see `.dejavue/decisions.md` for the
+full trail. Trust a green `cargo test` for logic, not for "does this
+actually work against the real network/filesystem."
 
 ## Build
 
 ```bash
 cargo build
-cargo test    # 23 tests, all unit-level (no network)
+cargo test    # 55 tests, all unit-level (no network) — see the live-testing note above
 cargo doc --no-deps    # should produce zero warnings
 ```
+
+`bwrap` (bubblewrap) must be installed for real sandboxing; `buckets`
+still works without it (falls back to unsandboxed exec with a warning).
 
 No `CARGO_TARGET_DIR` redirection needed — standalone crate, no path-deps
 on any peer project.

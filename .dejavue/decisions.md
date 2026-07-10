@@ -29,3 +29,18 @@ Rejected alternatives:
 Outcome:
 node@20 and jq@latest both verified working end-to-end (resolve -> download -> install -> compose env -> exec), rerun confirmed cache-hit path skips re-download. Added dist_version_string() as the one place that knows how to round-trip a letter-suffixed version back to the dist server's real string form. NOT exhaustively re-verified: the other ~55 aliases in index.rs may have similar wrong-project-name bugs to jq's — only node/openssl/icu4c/jq were confirmed live.
 
+
+## 2026-07-10T10:15:03-05:00 — [STRATEGIC] [VERIFIED] [ARCHITECTURAL] Real bwrap sandboxing + git-clone/build/run pipeline — found 3 more real bugs via live testing
+
+Reason:
+User wanted buckets expanded toward a full ephemeral dev-environment platform (build/run arbitrary source without touching the host, worktree buckets, per-agent buckets, capsule mapping, X11 GUI buckets). Sequenced: real process isolation first (bwrap — several of the other ideas assume containment that didn't exist; run/shell were plain unsandboxed subprocess exec before this), then a git-clone->detect->build->run pipeline as the first concrete phase (no new isolation needed, reuses the existing resolve engine, testable on real projects immediately). Standalone (no exosphere/exo-light dependency), consistent with buckets' earlier founding decision. x11docker's own design confirmed GUI sandboxing needs real containment to exist first, so it's explicitly deferred, not built here.
+
+Artifacts: src/sandbox.rs,src/project.rs,src/main.rs,src/resolve.rs,src/index.rs
+
+Rejected alternatives:
+- **route sandboxing through exo-light's ExoLightRuntime**: exo-light's own subprocess backend documents itself as having no namespace/cgroup dependency anyway (the real isolation code is exosphere's crates/exo/container, a heavier crate) — would add a peer dependency for no real containment benefit
+- **build real isolation AND worktree/per-agent/capsule features in one pass**: too much surface for one verified pass; those are natural follow-ons once build proves out
+
+Outcome:
+sandbox.rs (bwrap-based, unit-tested arg-building + live-verified: normal exec works, write outside grants fails, write inside cwd succeeds), project.rs (source resolution + 5-language build detection), buckets build subcommand — all wired through the same resolve/install engine. Found 3 more real bugs via live testing (matching this project's now-established pattern of cargo test passing while real network/filesystem behavior was still broken): (1) --chdir failed because run/shell never bound the invocation cwd into the sandbox: fixed by treating cwd as a rw project_dir bind. (2) companion resolution was only one level deep, so rust's companion-of-a-companion (cargo needs openssl@^1.1, but cargo itself is only reachable as rust's companion) was silently dropped: fixed by making companion collection a proper transitive worklist/BFS, with an honestly-documented known gap (no constraint-intersection when two paths want the same companion under different constraints). (3) sharing the network namespace (omitting --unshare-net) doesn't give working DNS on its own: cargo's crates.io fetch failed with 'Could not resolve host' because /etc/resolv.conf wasn't bound into the fresh mount namespace — fixed by ro-binding resolv.conf/hosts/nsswitch.conf/ssl/ca-certificates when allow_network is set. Verified end-to-end: a real Rust crate (exo-light's capsule-contract) built AND tested successfully via local path; a real 16-crate workspace (interactd) cloned fresh via git URL and built successfully, all inside the sandbox. 55 tests, cargo doc clean.
+

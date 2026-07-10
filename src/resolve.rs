@@ -25,61 +25,23 @@ pub fn resolve(spec: &str, config: &Config, index: &Index) -> Result<ResolvedEnv
 /// Resolve multiple specs into a unified runnable environment.
 ///
 /// Unlike single-package resolution, this:
-/// 1. Resolves all specs + their companions
-/// 2. Deduplicates across specs
-/// 3. Installs all packages
-/// 4. Composes a unified environment with all installations
+/// 1. Resolves all specs + their companions, transitively (a companion
+///    can itself have companions) and deduplicated across specs
+/// 2. Installs all packages
+/// 3. Composes a unified environment with all installations
 pub fn resolve_multi(specs: &[String], config: &Config, index: &Index) -> Result<ResolvedEnvironment> {
     if specs.is_empty() {
         bail!("At least one spec is required");
     }
 
-    // Phase 1: Parse + alias + collect companions
-    let mut all_reqs: Vec<PackageReq> = Vec::new();
+    // Phase 1: Parse + alias + collect companions, transitively.
+    let all_reqs = collect_transitive_reqs(specs, index)?;
 
-    for spec in specs {
-        let req = PackageReq::parse(spec)
-            .with_context(|| format!("Failed to parse spec: {spec}"))?;
-        let project = index.resolve_alias(&req.project).to_string();
-
-        let resolved_req = PackageReq {
-            project: project.clone(),
-            constraint: req.constraint.clone(),
-        };
-        all_reqs.push(resolved_req);
-
-        // Add companions for this project. Companion entries are full specs
-        // ("openssl@^1.1", not bare "openssl") so a companion can pin an
-        // exact version range — some packages dynamically link a SPECIFIC
-        // major of a shared companion (e.g. node needs openssl 1.1's
-        // libcrypto.so.1.1, not the latest 3.x's libcrypto.so.3), so
-        // defaulting to STAR/latest here would silently install a version
-        // that doesn't satisfy the actual runtime dependency. Parsed and
-        // alias-resolved the same way the top-level spec is, just above.
-        let companions = index.companions(&project);
-        for companion in companions {
-            let companion_spec = PackageReq::parse(companion)
-                .with_context(|| format!("Failed to parse companion spec: {companion}"))?;
-            let companion_project = index.resolve_alias(&companion_spec.project).to_string();
-            all_reqs.push(PackageReq {
-                project: companion_project,
-                constraint: companion_spec.constraint,
-            });
-        }
-    }
-
-    // Phase 2: Deduplicate by project, keeping the first constraint
-    let mut seen_projects = std::collections::HashSet::new();
-    let mut deduped_reqs: Vec<PackageReq> = Vec::new();
-    for req in all_reqs {
-        if seen_projects.insert(req.project.clone()) {
-            deduped_reqs.push(req);
-        }
-    }
-
-    // Phase 3: Resolve all packages to concrete versions
+    // Phase 2: Resolve all packages to concrete versions. `all_reqs` is
+    // already deduplicated (see `collect_transitive_reqs`), first
+    // constraint per project wins.
     let mut packages: Vec<Package> = Vec::new();
-    for req in &deduped_reqs {
+    for req in &all_reqs {
         let version = resolve_version(config, &req.project, &req.constraint)
             .with_context(|| format!("Failed to resolve version for '{}'", req.project))?;
 
@@ -96,10 +58,10 @@ pub fn resolve_multi(specs: &[String], config: &Config, index: &Index) -> Result
         });
     }
 
-    // Phase 4: Install all packages (parallel if multiple)
+    // Phase 3: Install all packages (parallel if multiple)
     let installations = install_all(config, &packages)?;
 
-    // Phase 5: Compose unified environment
+    // Phase 4: Compose unified environment
     let env = crate::env::compose_env(&installations);
 
     // The entry package is the first spec's resolved package
@@ -120,6 +82,56 @@ pub fn resolve_multi(specs: &[String], config: &Config, index: &Index) -> Result
         entry: entry_pkg,
         all_packages: packages,
     })
+}
+
+/// Parse `specs`, alias-resolve each, and expand companions TRANSITIVELY —
+/// a companion can itself have companions (e.g. rust's `cargo` companion
+/// itself needs `openssl@^1.1`), so this is a worklist/BFS over the
+/// companion graph, not a single fixed-depth pass. Deduplicated: the first
+/// constraint *processed* (BFS order — top-level specs left-to-right,
+/// then each one's companions) for a project wins, and a project already
+/// queued is never re-expanded (also guards against a cycle in
+/// hand-authored index data spinning forever).
+///
+/// **Known limitation**: when two different paths need the SAME companion
+/// under DIFFERENT constraints (e.g. one spec's companion wants bare
+/// `openssl` [any version] and another's wants `openssl@^1.1`
+/// specifically), whichever is processed first wins — there's no
+/// constraint-intersection logic, so the loser's real requirement can be
+/// silently unsatisfied if the winner resolves to an incompatible version.
+/// Not hit by any single-toolchain `buckets build`/`run` today (the
+/// conflict needs two top-level specs whose companion graphs collide);
+/// worth fixing with real intersection logic if that changes.
+fn collect_transitive_reqs(specs: &[String], index: &Index) -> Result<Vec<PackageReq>> {
+    let mut all_reqs: Vec<PackageReq> = Vec::new();
+    let mut queued = std::collections::HashSet::new();
+    let mut worklist: std::collections::VecDeque<PackageReq> = specs
+        .iter()
+        .map(|spec| PackageReq::parse(spec).with_context(|| format!("Failed to parse spec: {spec}")))
+        .collect::<Result<_>>()?;
+
+    while let Some(req) = worklist.pop_front() {
+        let project = index.resolve_alias(&req.project).to_string();
+        if !queued.insert(project.clone()) {
+            continue;
+        }
+        all_reqs.push(PackageReq { project: project.clone(), constraint: req.constraint });
+
+        // Companion entries are full specs ("openssl@^1.1", not bare
+        // "openssl") so a companion can pin an exact version range — some
+        // packages dynamically link a SPECIFIC major of a shared companion
+        // (e.g. node needs openssl 1.1's libcrypto.so.1.1, not the latest
+        // 3.x's libcrypto.so.3), so defaulting to STAR/latest here would
+        // silently install a version that doesn't satisfy the actual
+        // runtime dependency.
+        for companion in index.companions(&project) {
+            let companion_spec = PackageReq::parse(companion)
+                .with_context(|| format!("Failed to parse companion spec: {companion}"))?;
+            worklist.push_back(companion_spec);
+        }
+    }
+
+    Ok(all_reqs)
 }
 
 /// Install a list of packages, caching already-installed ones.
@@ -214,4 +226,59 @@ pub fn info(spec: &str, config: &Config, index: &Index) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for a real bug: "rust" -> companion "rust-lang.org/
+    /// cargo" -> companion "openssl@^1.1" is a TWO-level chain. The
+    /// original single-pass companion loop only expanded one level, so
+    /// `buckets build` on a real Rust project resolved rustc+cargo but
+    /// silently dropped openssl — cargo then failed at runtime with
+    /// "libssl.so.1.1: cannot open shared object file".
+    #[test]
+    fn transitive_companion_of_companion_is_included() {
+        let index = Index::builtin();
+        let reqs = collect_transitive_reqs(&["rust".to_string()], &index).unwrap();
+        let projects: Vec<&str> = reqs.iter().map(|r| r.project.as_str()).collect();
+        assert!(projects.contains(&"rust-lang.org"), "{projects:?}");
+        assert!(projects.contains(&"rust-lang.org/cargo"), "{projects:?}");
+        assert!(projects.contains(&"openssl.org"), "{projects:?}");
+    }
+
+    /// node -> openssl/icu4c (one level) still works after the rewrite.
+    #[test]
+    fn single_level_companions_still_included() {
+        let index = Index::builtin();
+        let reqs = collect_transitive_reqs(&["node".to_string()], &index).unwrap();
+        let projects: Vec<&str> = reqs.iter().map(|r| r.project.as_str()).collect();
+        assert!(projects.contains(&"nodejs.org"), "{projects:?}");
+        assert!(projects.contains(&"openssl.org"), "{projects:?}");
+        assert!(projects.contains(&"unicode.org"), "{projects:?}");
+    }
+
+    /// A project pulled in as a companion from two different top-level
+    /// specs (or two branches of the companion graph) is only queued once.
+    #[test]
+    fn shared_companion_deduplicated() {
+        let index = Index::builtin();
+        // Both "rust" (via cargo) and "curl" declare openssl as a companion,
+        // under DIFFERENT constraints (^1.1 vs bare/STAR) — only asserting
+        // dedup happens (exactly one entry), not which constraint wins.
+        // See collect_transitive_reqs's doc comment: that's a known,
+        // unresolved limitation, not something this test claims is correct.
+        let reqs = collect_transitive_reqs(&["rust".to_string(), "curl".to_string()], &index).unwrap();
+        let openssl_count = reqs.iter().filter(|r| r.project == "openssl.org").count();
+        assert_eq!(openssl_count, 1, "{reqs:?}");
+    }
+
+    #[test]
+    fn no_companions_is_just_the_spec_itself() {
+        let index = Index::builtin();
+        let reqs = collect_transitive_reqs(&["python".to_string()], &index).unwrap();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].project, "python.org");
+    }
 }

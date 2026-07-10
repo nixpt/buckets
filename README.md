@@ -57,7 +57,26 @@ buckets info git@latest
 
 # List cached installations
 buckets list
+
+# Build/test/run a real project — clone (git URL) or use (local path),
+# detect the build system, resolve the toolchain it needs, build inside
+# a sandboxed bucket. Doesn't touch the host filesystem outside the
+# project dir + the resolved toolchain's own cache.
+buckets build /path/to/repo
+buckets build https://github.com/owner/repo --test
+buckets build . --test --run
 ```
+
+## Real process isolation
+
+`run`/`shell`/`build` all execute under [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`) — a fresh mount + PID namespace, not just an isolated toolchain
+version. Only the resolved toolchain's own install dirs (read-only) and
+the invocation/project directory (read-write) are visible inside; nothing
+else on the host is. Network is off by default for `run`/`shell` (most
+tool invocations don't need it) and on for `build` (package registries
+do). Falls back to a plain unsandboxed subprocess with a warning if
+`bwrap` isn't installed — use `--no-sandbox` to opt out explicitly.
 
 ## Spec format
 
@@ -116,6 +135,7 @@ buckets list
 | `env <specs>` | Print shell exports (`--json` for structured output) |
 | `info <specs>` | Show resolution without installing |
 | `list` | Show cached installations |
+| `build <path-or-url> [--test] [--run]` | Detect + build (+ test/run) a real project, sandboxed |
 
 ## Configuration
 
