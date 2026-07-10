@@ -15,8 +15,21 @@ AI agents need ad-hoc runtimes: "run this with Node 20", "test this with
 Python 3.11", "build with Go 1.22 + CMake". Installing these globally pollutes
 the host and creates version conflicts.
 
-**buckets** gives each command its own throwaway runtime ��� fetched on demand
+**buckets** gives each command its own throwaway runtime — fetched on demand
 from `dist.pkgx.dev`, cached locally, cleaned up when done.
+
+## Using it from the squad fleet
+
+Any agent with shell access (bro-cli's `bash` tool, a dispatched Claude Code
+horse, any runner) can call `buckets` directly once it's on `PATH` — it's a
+plain CLI, no MCP/tool registration needed. For concurrent fleet agents,
+prefer `bucket-bridge` (`jokersquad/bin/bucket-bridge`, symlinked to
+`~/.local/bin/`) over calling `buckets` directly: it's a transparent wrapper
+that points every agent at one shared `BUCKETS_CACHE_DIR`
+(`~/.cache/squadron-buckets`) instead of each agent maintaining its own
+cache, so N agents resolving the same spec (`node@20`) don't each
+redundantly download the same bottle. Safe under concurrency — see
+`install.rs`'s atomic-rename install.
 
 ## Usage
 
