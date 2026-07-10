@@ -113,6 +113,39 @@ impl XvfbSession {
         }
         Ok(())
     }
+
+    /// Start x11vnc bound to this session's display on a given port.
+    /// Returns the VNC server child process (which the caller must keep
+    /// alive for the duration of the session).
+    pub fn start_vnc(&self, port: u16, password: Option<&str>) -> Result<Child> {
+        if which("x11vnc").is_none() {
+            bail!("'x11vnc' not found on PATH — install it for VNC support (e.g. apt install x11vnc)");
+        }
+
+        let mut cmd = Command::new("x11vnc");
+        cmd.arg("-display").arg(&self.display)
+            .arg("-rfbport").arg(port.to_string())
+            .arg("-forever")
+            .arg("-shared")
+            .arg("-noipv6")
+            .env("XAUTHORITY", &self.xauthority)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        if let Some(pwd) = password {
+            if !pwd.is_empty() {
+                cmd.arg("-passwd").arg(pwd);
+            }
+        } else {
+            cmd.arg("-nopw");
+        }
+
+        let child = cmd.spawn()
+            .with_context(|| format!("Failed to spawn x11vnc on port {port}"))?;
+
+        eprintln!("▶ x11vnc running on port {port} for {}", self.display);
+        Ok(child)
+    }
 }
 
 impl Drop for XvfbSession {

@@ -21,6 +21,7 @@ tar = "0.4"
 xz2 = "0.1"
 regex = "1"
 url = "2"
+toml = "0.8"
 
 [profile.release]
 strip = true
