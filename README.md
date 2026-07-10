@@ -128,6 +128,24 @@ buckets list
 cargo install --path .
 ```
 
+## Acknowledgments
+
+buckets is a clean-room reimplementation, not a fork — no source from the
+projects below is copied here, only the formats/behaviors listed under
+"Features borrowed from pkgx" above, plus the general
+resolve→install→compose→exec pipeline shape.
+
+- **[pkgx](https://github.com/pkgxdev/pkgx)** (Max Howell, Jacob Heider;
+  Copyright 2022–23 pkgx inc.; Apache-2.0) — the bottle format, `dist.pkgx.dev`
+  distribution protocol, cache/symlink layout, companion-package resolution,
+  and env-composition approach are all pkgx's design, reimplemented here.
+- **exosphere's `exo-hydra`** and **exo-light's `exo-hydra`** — the same
+  pkgx-derived provisioning pipeline shape (resolve → install → compose →
+  exec), adapted for this project's standalone/sync use case. See
+  `/workspace/projects/CLAUDE.md`'s provisioning-lineage note for how the
+  three relate.
+
 ## License
 
-MIT
+MIT — see `LICENSE`. (Acknowledgments above are for design/format credit,
+not a licensing obligation — no pkgx source is redistributed.)

@@ -3,6 +3,7 @@ name = "buckets"
 version = "0.1.0"
 description = "Throwaway runtime buckets for AI agents — resolve, fetch, and run any tool in an isolated environment"
 edition = "2021"
+license = "MIT"
 
 [[bin]]
 name = "buckets"
