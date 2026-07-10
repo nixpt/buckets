@@ -224,16 +224,17 @@ fn cmd_list(config: &Config) -> Result<()> {
         }
 
         any = true;
-        let ver_strs: Vec<String> = versions.iter().map(|v| v.to_string()).collect();
+        let ver_strs: Vec<String> = versions.iter().map(types::dist_version_string).collect();
         println!("  {}  [{}]", project_str, ver_strs.join(", "));
 
         // Show symlink aliases
         for alias in &["v*", &format!("v{}", versions[0].major)] {
             if let Some(resolved) = cellar::resolve_symlink(config, &project_str, alias) {
+                let resolved_str = types::dist_version_string(&resolved);
                 if resolved != versions[0] {
-                    println!("    {alias} → v{resolved}");
+                    println!("    {alias} → v{resolved_str}");
                 } else {
-                    println!("    {alias} → v{resolved} (latest)");
+                    println!("    {alias} → v{resolved_str} (latest)");
                 }
             }
         }

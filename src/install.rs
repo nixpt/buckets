@@ -9,14 +9,14 @@ use std::fs;
 
 use crate::cellar;
 use crate::config::Config;
-use crate::types::{Installation, Package};
+use crate::types::{dist_version_string, Installation, Package};
 
 /// Install a package: download, extract, and cache it.
 ///
 /// Returns the `Installation` pointing to the cached directory.
 /// Uses a temp dir + atomic rename pattern for crash safety.
 pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
-    let version_str = pkg.version.to_string();
+    let version_str = dist_version_string(&pkg.version);
     let project_dir = config.project_dir(&pkg.project);
     let target_dir = config.version_dir(&pkg.project, &version_str);
 

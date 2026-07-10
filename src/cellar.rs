@@ -10,11 +10,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::types::{Installation, Package};
+use crate::types::{dist_version_string, Installation, Package};
 
 /// Check if a specific version of a project is already installed in cache.
 pub fn is_installed(config: &Config, project: &str, version: &Version) -> bool {
-    config.version_dir(project, &version.to_string()).join("bin").exists()
+    config.version_dir(project, &dist_version_string(version)).join("bin").exists()
 }
 
 /// List all installed versions of a project, sorted newest-first.
@@ -38,7 +38,7 @@ pub fn list_installed(config: &Config, project: &str) -> Vec<Version> {
             continue;
         }
         if let Some(ver_str) = name_str.strip_prefix('v') {
-            if let Ok(ver) = Version::parse(ver_str) {
+            if let Some(ver) = crate::inventory::parse_dist_version(ver_str) {
                 versions.push(ver);
             }
         }
@@ -57,7 +57,7 @@ pub fn best_installed(config: &Config, project: &str, constraint: &semver::Versi
 
 /// Get the full Installation struct for an installed package.
 pub fn get_installation(config: &Config, pkg: &Package) -> Installation {
-    let path = config.version_dir(&pkg.project, &pkg.version.to_string());
+    let path = config.version_dir(&pkg.project, &dist_version_string(&pkg.version));
     Installation {
         pkg: pkg.clone(),
         path,
@@ -104,7 +104,7 @@ pub fn update_version_symlinks(config: &Config, project: &str, installed: &Versi
 /// to `v<version>`.
 fn create_symlink(project_dir: &PathBuf, name: &str, version: &Version) -> Result<()> {
     let link_path = project_dir.join(name);
-    let target = format!("v{}", version);
+    let target = format!("v{}", dist_version_string(version));
 
     // Remove existing symlink or directory if present
     if link_path.exists() || link_path.is_symlink() {
@@ -133,11 +133,8 @@ pub fn resolve_symlink(config: &Config, project: &str, alias: &str) -> Option<Ve
     }
     let target = std::fs::read_link(&path).ok()?;
     let name = target.file_name()?.to_string_lossy();
-    if let Some(ver_str) = name.strip_prefix('v') {
-        Version::parse(ver_str).ok()
-    } else {
-        None
-    }
+    let ver_str = name.strip_prefix('v')?;
+    crate::inventory::parse_dist_version(ver_str)
 }
 
 /// Check if the cache has metadata suggesting we've already looked up

@@ -10,6 +10,21 @@ use semver::{Version, VersionReq};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Render a `Version` the way the dist server / cache paths expect it —
+/// the inverse of `crate::inventory::parse_dist_version`'s letter-suffix
+/// encoding (`1.1.1+w` → `1.1.1w`, not semver's own `1.1.1+w`). Nothing
+/// else in this crate ever sets build metadata, so "has build metadata"
+/// unambiguously means "came from that encoding." Use this (not
+/// `Version::to_string()`/`format!("{version}")`) anywhere a version is
+/// turned into a URL segment or cache/symlink path component.
+pub fn dist_version_string(v: &Version) -> String {
+    if v.build.is_empty() {
+        v.to_string()
+    } else {
+        format!("{}.{}.{}{}", v.major, v.minor, v.patch, v.build)
+    }
+}
+
 /// A fully pinned package with an exact version.
 #[derive(Debug, Clone)]
 pub struct Package {
@@ -143,8 +158,11 @@ pub fn platform_prefix() -> String {
         HostOs::MacOs => "darwin",
         HostOs::Windows => "windows",
     };
+    // "x86-64" (hyphen), matching pkgx's real dist-server path segment —
+    // not "x86_64". Verified against a live dist.pkgx.dev request; the
+    // underscore form 404s.
     let arch = match detect_host_arch() {
-        HostArch::Amd64 => "x86_64",
+        HostArch::Amd64 => "x86-64",
         HostArch::Aarch64 => "aarch64",
     };
     format!("{os}/{arch}")

@@ -32,8 +32,12 @@ impl Index {
 
         aliases.insert("node",    "nodejs.org");
         provides.insert("nodejs.org", vec!["node", "npm", "npx", "corepack"]);
-        companions.insert("nodejs.org", vec![]);
-        // Node's npm needs python+make to build native addons, but at runtime it's self-contained
+        // node itself dynamically links openssl 1.1 + icu4c 73 (verified via
+        // `ldd` against a real v20.20.2 bottle — libcrypto.so.1.1/libssl.so.1.1/
+        // libicu{i18n,uc,data}.so.73 all "not found" without these). Pinned,
+        // not bare "openssl"/"icu4c" latest — 3.x openssl ships .so.3, not
+        // .so.1.1, so an unpinned companion would still leave node broken.
+        companions.insert("nodejs.org", vec!["openssl@^1.1", "icu4c@^73"]);
 
         aliases.insert("python",  "python.org");
         provides.insert("python.org", vec!["python3", "python", "pip3", "pip", "venv"]);
@@ -120,8 +124,10 @@ impl Index {
         // Text Processing
         // ═══════════════════════════════════════════════════════════
 
-        aliases.insert("jq",      "jqlang.org");
-        provides.insert("jqlang.org", vec!["jq"]);
+        // pkgx's real dist-server project name is "stedolan.github.io/jq"
+        // (jq's original author's domain) — verified live, "jqlang.org" 404s.
+        aliases.insert("jq",      "stedolan.github.io/jq");
+        provides.insert("stedolan.github.io/jq", vec!["jq"]);
 
         aliases.insert("yq",      "mikefarah.git.io/yq");
         provides.insert("mikefarah.git.io/yq", vec!["yq"]);
@@ -341,9 +347,12 @@ impl Index {
         companions.insert("zlib",     vec![]);
         companions.insert("expat",    vec![]);
         companions.insert("nghttp2",  vec![]);
+        companions.insert("icu4c",    vec![]);
         // Provide aliases for companion packages too
         aliases.insert("openssl", "openssl.org");
         provides.insert("openssl.org", vec!["openssl"]);
+        aliases.insert("icu4c", "unicode.org");
+        provides.insert("unicode.org", vec!["icu4c"]);
 
         Self { aliases, provides, companions }
     }

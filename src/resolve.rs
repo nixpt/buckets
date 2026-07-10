@@ -48,14 +48,23 @@ pub fn resolve_multi(specs: &[String], config: &Config, index: &Index) -> Result
         };
         all_reqs.push(resolved_req);
 
-        // Add companions for this project
+        // Add companions for this project. Companion entries are full specs
+        // ("openssl@^1.1", not bare "openssl") so a companion can pin an
+        // exact version range — some packages dynamically link a SPECIFIC
+        // major of a shared companion (e.g. node needs openssl 1.1's
+        // libcrypto.so.1.1, not the latest 3.x's libcrypto.so.3), so
+        // defaulting to STAR/latest here would silently install a version
+        // that doesn't satisfy the actual runtime dependency. Parsed and
+        // alias-resolved the same way the top-level spec is, just above.
         let companions = index.companions(&project);
         for companion in companions {
-            let companion_req = PackageReq {
-                project: companion.to_string(),
-                constraint: semver::VersionReq::STAR,
-            };
-            all_reqs.push(companion_req);
+            let companion_spec = PackageReq::parse(companion)
+                .with_context(|| format!("Failed to parse companion spec: {companion}"))?;
+            let companion_project = index.resolve_alias(&companion_spec.project).to_string();
+            all_reqs.push(PackageReq {
+                project: companion_project,
+                constraint: companion_spec.constraint,
+            });
         }
     }
 

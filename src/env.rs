@@ -201,7 +201,7 @@ pub fn format_json(env: &ResolvedEnvironment) -> Result<String, serde_json::Erro
 
     let packages: Vec<JsonPackage> = env.installations.iter().map(|inst| JsonPackage {
         project: inst.pkg.project.clone(),
-        version: inst.pkg.version.to_string(),
+        version: crate::types::dist_version_string(&inst.pkg.version),
         path: inst.path.to_string_lossy().to_string(),
     }).collect();
 

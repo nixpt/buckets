@@ -54,19 +54,25 @@ impl Config {
         self.cache_dir.join(project)
     }
 
-    /// URL for a bottle tarball.
+    /// URL for a bottle tarball. Path order is `{project}/{platform}/v{version}.tar.xz`
+    /// (`platform` = "os/arch") — matches pkgx's real dist-server layout
+    /// (`{base}/{project}/{os}/{arch}/v{version}.tar.xz`); `self.platform`
+    /// already carries the embedded `os/arch` slash. Verified against a
+    /// live 200 from dist.pkgx.dev — the earlier `{platform}/{project}`
+    /// order 404s.
     pub fn bottle_url(&self, project: &str, version: &str) -> String {
         format!(
             "{}/{}/{}/v{version}.tar.xz",
-            self.dist_url, self.platform, project
+            self.dist_url, project, self.platform
         )
     }
 
-    /// URL for the versions list of a project.
+    /// URL for the versions list of a project. Same path-order fix as
+    /// [`bottle_url`](Self::bottle_url).
     pub fn versions_url(&self, project: &str) -> String {
         format!(
             "{}/{}/{}/versions.txt",
-            self.dist_url, self.platform, project
+            self.dist_url, project, self.platform
         )
     }
 }
