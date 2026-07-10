@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::types::{Installation, ResolvedEnvironment};
+use crate::types::{Installation, Package, ResolvedEnvironment};
 
 /// Compose environment variables for a set of installations.
 ///
 /// For each installation, scans standard subdirectories and maps them to
 /// the corresponding environment variables:
-/// - `bin/` → `PATH`
+/// - `bin/`, `sbin/` → `PATH`
 /// - `lib/`, `lib64/` → `LD_LIBRARY_PATH` (Linux) / `DYLD_FALLBACK_LIBRARY_PATH` (macOS)
 /// - `include/` → `CPATH`
-/// - `man/` → `MANPATH`
+/// - `man/`, `share/man/` → `MANPATH`
 /// - `share/` → `XDG_DATA_DIRS`
 /// - `share/pkgconfig/`, `lib/pkgconfig/` → `PKG_CONFIG_PATH`
 ///
@@ -18,7 +18,6 @@ use crate::types::{Installation, ResolvedEnvironment};
 pub fn compose_env(installations: &[Installation]) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
-    // Collect all paths for each env var key
     let mut path_entries: Vec<PathBuf> = Vec::new();
     let mut ld_library_path: Vec<PathBuf> = Vec::new();
     let mut cpath: Vec<PathBuf> = Vec::new();
@@ -92,7 +91,6 @@ pub fn compose_env(installations: &[Installation]) -> HashMap<String, String> {
         }
     }
 
-    // Prepend collected paths to existing environment
     prepend_path(&mut env, "PATH", &dedup_ordered(&path_entries));
     prepend_path(&mut env, "LD_LIBRARY_PATH", &dedup_ordered(&ld_library_path));
     prepend_path(&mut env, "CPATH", &dedup_ordered(&cpath));
@@ -136,15 +134,78 @@ fn dedup_ordered(items: &[PathBuf]) -> Vec<String> {
     result
 }
 
-/// Build a `ResolvedEnvironment` from installations and the entry package.
+/// Build a `ResolvedEnvironment` from installations + entry + all packages.
 #[allow(dead_code)]
-pub fn build_resolved_env(installations: Vec<Installation>, entry: crate::types::Package) -> ResolvedEnvironment {
+pub fn build_resolved_env(
+    installations: Vec<Installation>,
+    entry: Package,
+    all_packages: Vec<Package>,
+) -> ResolvedEnvironment {
     let env = compose_env(&installations);
     ResolvedEnvironment {
         installations,
         env,
         entry,
+        all_packages,
     }
+}
+
+/// Format a ResolvedEnvironment as shell export statements.
+///
+/// ```sh
+/// export PATH="/home/user/.buckets/nodejs.org/v20.11.0/bin:$PATH"
+/// export LD_LIBRARY_PATH="..."
+/// ```
+pub fn format_shell_exports(env: &ResolvedEnvironment) -> String {
+    let mut out = String::new();
+
+    // Comment header
+    out.push_str("# buckets environment\n");
+
+    for (key, value) in &env.env {
+        out.push_str(&format!("export {}=\"{}\"\n", key, value));
+    }
+
+    // Also emit PATH additions as individual components for easy inspection
+    if let Some(path) = env.env.get("PATH") {
+        out.push_str("\n# PATH components:\n");
+        for (i, component) in path.split(':').enumerate() {
+            out.push_str(&format!("#   [{i}] {component}\n"));
+        }
+    }
+
+    out
+}
+
+/// Format a ResolvedEnvironment as JSON.
+pub fn format_json(env: &ResolvedEnvironment) -> Result<String, serde_json::Error> {
+    #[derive(serde::Serialize)]
+    struct JsonOutput<'a> {
+        version: u32,
+        environment: &'a HashMap<String, String>,
+        packages: Vec<JsonPackage>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct JsonPackage {
+        project: String,
+        version: String,
+        path: String,
+    }
+
+    let packages: Vec<JsonPackage> = env.installations.iter().map(|inst| JsonPackage {
+        project: inst.pkg.project.clone(),
+        version: inst.pkg.version.to_string(),
+        path: inst.path.to_string_lossy().to_string(),
+    }).collect();
+
+    let output = JsonOutput {
+        version: 2,
+        environment: &env.env,
+        packages,
+    };
+
+    serde_json::to_string_pretty(&output)
 }
 
 #[cfg(test)]
@@ -171,9 +232,20 @@ mod tests {
 
     #[test]
     fn test_prepend_path_preserves_existing() {
-        // We need to test logic without actually setting env vars
         let mut env = HashMap::new();
         prepend_path(&mut env, "TEST_PATH", &["/new".to_string()]);
         assert_eq!(env.get("TEST_PATH").unwrap(), "/new");
+    }
+
+    #[test]
+    fn test_format_shell_exports() {
+        let env = ResolvedEnvironment {
+            installations: vec![],
+            env: HashMap::from([("PATH".into(), "/a:/b".into())]),
+            entry: Package { project: "test".into(), version: semver::Version::new(1, 0, 0) },
+            all_packages: vec![],
+        };
+        let output = format_shell_exports(&env);
+        assert!(output.contains("export PATH=\"/a:/b\""));
     }
 }

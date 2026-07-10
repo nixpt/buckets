@@ -1,14 +1,15 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::fs::{self};
+use std::fs;
 
+use crate::cellar;
 use crate::config::Config;
 use crate::types::{Installation, Package};
 
 /// Install a package: download, extract, and cache it.
 ///
 /// Returns the `Installation` pointing to the cached directory.
-/// Uses a temp file + atomic rename pattern for crash safety.
+/// Uses a temp dir + atomic rename pattern for crash safety.
 pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     let version_str = pkg.version.to_string();
     let project_dir = config.project_dir(&pkg.project);
@@ -16,6 +17,8 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
 
     // Fast path: already installed
     if target_dir.join("bin").exists() {
+        // Still update symlinks in case they're stale
+        cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
         return Ok(Installation {
             pkg: pkg.clone(),
             path: target_dir,
@@ -26,7 +29,7 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     fs::create_dir_all(&project_dir)
         .with_context(|| format!("Failed to create cache dir: {}", project_dir.display()))?;
 
-    // Download to a temp file in the same filesystem (for atomic rename)
+    // Download the bottle
     let url = config.bottle_url(&pkg.project, &version_str);
     eprintln!("↓ fetching {url}");
 
@@ -38,7 +41,6 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     let tempdir = tempfile::tempdir_in(&project_dir)
         .context("Failed to create temp directory for extraction")?;
 
-    // Read the response body as raw bytes, decompress xz, extract tar
     let reader = response.into_reader();
     let xz_decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(xz_decoder);
@@ -46,8 +48,7 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     archive.unpack(tempdir.path())
         .with_context(|| format!("Failed to extract bottle for {url}"))?;
 
-    // The tarball contains {project}/v{version}/... (pkgx format)
-    // or sometimes just flat content. Discover the actual extraction root.
+    // Discover the actual extraction root (pkgx bottles are nested)
     let extracted_root = find_extraction_root(tempdir.path(), &pkg.project, &version_str);
 
     // Atomic rename the extracted content to the target cache directory
@@ -55,19 +56,50 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
         fs::remove_dir_all(&target_dir)?;
     }
 
-    // If extraction root is nested (pkgx format), move its contents
     if extracted_root != tempdir.path() {
         rename_contents(&extracted_root, &target_dir)?;
     } else {
         fs::rename(&extracted_root, &target_dir)?;
     }
 
-    eprintln!("✓ cached {} v{}", pkg.project, version_str);
+    // Create version symlinks (v*, v<major>, v<major.minor>)
+    cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
+
+    eprintln!("��� cached {} v{}", pkg.project, version_str);
 
     Ok(Installation {
         pkg: pkg.clone(),
         path: target_dir,
     })
+}
+
+/// Install multiple packages concurrently using a thread pool.
+///
+/// Returns installations in the same order as the input packages.
+pub fn install_multi(config: &Config, packages: &[Package]) -> Result<Vec<Installation>> {
+    if packages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Use std::thread::scope for safe concurrent downloads
+    let results = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(packages.len());
+        for pkg in packages {
+            let config_ref = &*config;
+            handles.push(s.spawn(move || {
+                install(config_ref, pkg)
+            }));
+        }
+        handles.into_iter().map(|h| h.join().expect("thread panicked")).collect::<Vec<_>>()
+    });
+
+    // Collect results, returning first error if any
+    let mut installations = Vec::with_capacity(packages.len());
+    for result in results {
+        installations.push(result?);
+    }
+
+    Ok(installations)
 }
 
 /// Find the actual root of the extracted content.
@@ -82,7 +114,6 @@ fn find_extraction_root(temp_dir: &Path, project: &str, version: &str) -> PathBu
     if nested2.join("bin").exists() {
         return nested2;
     }
-    // Flat extraction — just return the temp dir
     temp_dir.to_path_buf()
 }
 

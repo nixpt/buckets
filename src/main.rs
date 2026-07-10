@@ -26,8 +26,8 @@ enum Command {
     ///
     /// Usage: buckets run node@20 -- script.js [args...]
     Run {
-        /// Runtime spec (e.g. "node@20", "python@3.11", "rust@latest")
-        spec: String,
+        /// Runtime spec(s) ��� can specify multiple like "node@20" "python@3.11"
+        specs: Vec<String>,
 
         /// Command and arguments to run
         #[arg(last = true, required = true)]
@@ -36,18 +36,33 @@ enum Command {
 
     /// Open an interactive shell with the runtime in PATH.
     Shell {
-        /// Runtime spec (e.g. "node@20", "python@3.11")
-        spec: String,
+        /// Runtime spec(s)
+        specs: Vec<String>,
 
         /// Shell to use (default: current SHELL)
         #[arg(short, long)]
         shell: Option<String>,
     },
 
+    /// Print the composed environment as shell exports or JSON.
+    ///
+    /// Usage:
+    ///   buckets env node@20
+    ///   buckets env node@20 python@3.11 --json
+    ///   eval "$(buckets env node@20)"
+    Env {
+        /// Runtime spec(s)
+        specs: Vec<String>,
+
+        /// Output as JSON instead of shell exports
+        #[arg(short, long)]
+        json: bool,
+    },
+
     /// Show resolution info for a spec (no installation).
     Info {
-        /// Runtime spec (e.g. "node@20")
-        spec: String,
+        /// Runtime spec(s)
+        specs: Vec<String>,
     },
 
     /// List cached installations.
@@ -60,49 +75,38 @@ fn main() -> Result<()> {
     let index = Index::builtin();
 
     match cli.command {
-        Command::Run { spec, command } => cmd_run(&spec, &command, &config, &index),
-        Command::Shell { spec, shell } => cmd_shell(&spec, shell.as_deref(), &config, &index),
-        Command::Info { spec } => cmd_info(&spec, &config, &index),
+        Command::Run { specs, command } => cmd_run(&specs, &command, &config, &index),
+        Command::Shell { specs, shell } => cmd_shell(&specs, shell.as_deref(), &config, &index),
+        Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
+        Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
     }
 }
 
 /// Run a command with the resolved runtime environment.
-fn cmd_run(spec: &str, command: &[String], config: &Config, index: &Index) -> Result<()> {
-    let resolved = resolve::resolve(spec, config, index)
-        .with_context(|| format!("Failed to resolve {spec}"))?;
-
-    let entry_bin = resolved
-        .installations
-        .first()
-        .map(|i| i.path.join("bin"))
-        .filter(|p| p.exists());
-
-    if let Some(bin_dir) = entry_bin {
-        eprintln!("  bin: {}", bin_dir.display());
+fn cmd_run(specs: &[String], command: &[String], config: &Config, index: &Index) -> Result<()> {
+    if specs.is_empty() {
+        anyhow::bail!("At least one spec is required (e.g. 'node@20')");
     }
 
-    // Extract the program and args from command
+    let resolved = resolve::resolve_multi(specs, config, index)
+        .with_context(|| format!("Failed to resolve specs: {}", specs.join(", ")))?;
+
     let (program, args) = command.split_first().context("No command specified")?;
 
-    // Merge resolved env into current process's env for the child
-    let resolved_env = &resolved.env;
-
-    // Set up the child process
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
 
-    // Pass through and extend the current environment
-    for (key, value) in resolved_env {
+    for (key, value) in &resolved.env {
         cmd.env(key, value);
     }
 
-    // Inherit stdio so the user sees output directly
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
-    eprintln!("▶ running in {} bucket", spec);
+    let bucket_name = specs.join("+");
+    eprintln!("▶ running in {bucket_name} bucket");
     let status = cmd.status().with_context(|| format!("Failed to execute {program}"))?;
 
     if !status.success() {
@@ -113,8 +117,12 @@ fn cmd_run(spec: &str, command: &[String], config: &Config, index: &Index) -> Re
 }
 
 /// Open an interactive shell with the runtime in PATH.
-fn cmd_shell(spec: &str, shell: Option<&str>, config: &Config, index: &Index) -> Result<()> {
-    let resolved = resolve::resolve(spec, config, index)?;
+fn cmd_shell(specs: &[String], shell: Option<&str>, config: &Config, index: &Index) -> Result<()> {
+    if specs.is_empty() {
+        anyhow::bail!("At least one spec is required (e.g. 'node@20')");
+    }
+
+    let resolved = resolve::resolve_multi(specs, config, index)?;
 
     let shell_program = shell
         .map(|s| s.to_string())
@@ -123,15 +131,13 @@ fn cmd_shell(spec: &str, shell: Option<&str>, config: &Config, index: &Index) ->
 
     let mut cmd = std::process::Command::new(&shell_program);
 
-    // Merge resolved env
     for (key, value) in &resolved.env {
         cmd.env(key, value);
     }
 
-    // Set a friendly prompt to indicate we're in a bucket
-    let bucket_prompt = format!("[{}] ", spec);
+    let bucket_name = specs.join("+");
+    let bucket_prompt = format!("[{}] ", bucket_name);
     cmd.env("BUCKET_PROMPT", &bucket_prompt);
-    // Set PS1 if using bash/zsh
     if shell_program.contains("bash") || shell_program.contains("zsh") {
         cmd.env("PS1", format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "));
     }
@@ -140,7 +146,7 @@ fn cmd_shell(spec: &str, shell: Option<&str>, config: &Config, index: &Index) ->
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
-    eprintln!("▶ starting {spec} bucket shell ({})", shell_program);
+    eprintln!("▶ starting {bucket_name} bucket shell ({})", shell_program);
     let status = cmd.status()?;
 
     if !status.success() {
@@ -150,9 +156,40 @@ fn cmd_shell(spec: &str, shell: Option<&str>, config: &Config, index: &Index) ->
     Ok(())
 }
 
+/// Print the composed environment.
+fn cmd_env(specs: &[String], json: bool, config: &Config, index: &Index) -> Result<()> {
+    if specs.is_empty() {
+        anyhow::bail!("At least one spec is required (e.g. 'node@20')");
+    }
+
+    let resolved = resolve::resolve_multi(specs, config, index)?;
+
+    if json {
+        let output = env::format_json(&resolved)?;
+        println!("{output}");
+    } else {
+        let output = env::format_shell_exports(&resolved);
+        print!("{output}");
+    }
+
+    Ok(())
+}
+
 /// Show resolution info.
-fn cmd_info(spec: &str, config: &Config, index: &Index) -> Result<()> {
-    resolve::info(spec, config, index)
+fn cmd_info(specs: &[String], config: &Config, index: &Index) -> Result<()> {
+    if specs.is_empty() {
+        anyhow::bail!("At least one spec is required (e.g. 'node@20')");
+    }
+
+    for spec in specs {
+        if specs.len() > 1 {
+            println!("═══ {spec} ═══");
+        }
+        resolve::info(spec, config, index)?;
+        println!();
+    }
+
+    Ok(())
 }
 
 /// List cached installations.
@@ -172,7 +209,6 @@ fn cmd_list(config: &Config) -> Result<()> {
         let project = entry.file_name();
         let project_str = project.to_string_lossy();
 
-        // Skip metadata files
         if project_str.starts_with('.') {
             continue;
         }
@@ -185,6 +221,17 @@ fn cmd_list(config: &Config) -> Result<()> {
         any = true;
         let ver_strs: Vec<String> = versions.iter().map(|v| v.to_string()).collect();
         println!("  {}  [{}]", project_str, ver_strs.join(", "));
+
+        // Show symlink aliases
+        for alias in &["v*", &format!("v{}", versions[0].major)] {
+            if let Some(resolved) = cellar::resolve_symlink(config, &project_str, alias) {
+                if resolved != versions[0] {
+                    println!("    {alias} → v{resolved}");
+                } else {
+                    println!("    {alias} → v{resolved} (latest)");
+                }
+            }
+        }
     }
 
     if !any {
