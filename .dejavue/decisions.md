@@ -69,3 +69,14 @@ Artifacts: src/gui.rs, main.rs cmd_gui, README.md GUI section, live-verified via
 Rejected alternatives:
 - **xauth generate before starting Xvfb (fails — needs a live X connection that doesn't exist yet); --hostdisplay-style reuse of the real :0 session (X11 has no per-client window isolation, would expose every other window); SIGKILL-only cleanup (found live**: leaves a dead /tmp/.X11-unix/X<N> socket behind since Xvfb never gets to unlink it, permanently skipping that display number forever)
 
+
+## 2026-07-10T12:47:57-05:00 — [STRATEGIC] [VERIFIED] [ARCHITECTURAL] Site buckets: revive site-capsulizer intent via bwrap, not in-process VFS
+
+Reason:
+exosphere-apps' exo-site-capsulizer (storage/net/worker-capsule) was found ~95% unenforced scaffolding (session 298/EXO-DC8: check_request() never called, storage VFS dead, workers never started); surfer-browser's replacement shim is explicitly documented as 'not an enforcement layer' either (real privacy = in-process JS fetch/XHR interceptor). Captain asked to revive the concept using buckets + borrowing Pake's UX (point at a URL, get an isolated running instance), directed to investigate which renderer fits — landed on surfer-browser itself (home-grown DOM/CSS/JS engine, not Chromium/Firefox/webkit): its headless CLI (surfer, --features cli) and native-window GUI (super-surfer, --features bliss) both need zero new build toolchain (no Tauri/webkit2gtk, unlike Pake's actual mechanism), and buckets' own bwrap sandbox now provides real OS-enforced per-origin storage isolation for free — exactly the enforcement layer that was always missing.
+
+Artifacts: src/site.rs (SiteTarget: persistent host-keyed storage dir or --incognito tempdir, Drop cleanup), main.rs cmd_site (reuses gui::XvfbSession verbatim for --gui, zero changes to sandbox.rs/gui.rs — third feature proving that design), live-verified: real surfer binary fetched https://example.com through the sandbox (correct JSON content, exit 0), confirmed rw-bind + real isolation (marker file written inside sandbox persisted to host cache dir, /home/nixp inside the sandbox was an empty auto-created placeholder down to the bound path only, .ssh and rest of real home invisible, /etc/shadow denied), --incognito storage dir confirmed removed on exit
+
+Rejected alternatives:
+- **re-wiring the orphaned exosphere-apps sitecapsule crates (known dead end, already investigated and abandoned at EXO-DC8); building Pake's actual Tauri/webkit2gtk pipeline per-site (heavier, unnecessary since surfer/super-surfer already provide a native renderer with zero extra toolchain); buckets building surfer/super-surfer itself (kept as a separate one-time cargo build, buckets site only consumes an already-built binary)**
+

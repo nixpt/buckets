@@ -98,6 +98,7 @@ dependencies = [
  "tar",
  "tempfile",
  "ureq",
+ "url",
  "xz2",
 ]
 

@@ -17,6 +17,7 @@ mod inventory;
 mod project;
 mod resolve;
 mod sandbox;
+mod site;
 mod types;
 mod worktree;
 
@@ -158,6 +159,64 @@ enum Command {
         #[arg(long)]
         no_sandbox: bool,
     },
+
+    /// Run a browser against a URL with a real, OS-enforced per-origin
+    /// storage sandbox — reviving the intent behind exosphere-apps'
+    /// site-capsulizer (storage/net/worker isolation), which was found
+    /// unenforced scaffolding, using bwrap for actual enforcement instead.
+    /// Defaults to a headless browser binary (e.g. `surfer`); pass --gui
+    /// for a windowed one (e.g. `super-surfer`) inside a fresh Xvfb.
+    ///
+    /// Usage:
+    ///   buckets site https://example.com
+    ///   buckets site https://example.com --gui --screenshot /tmp/out.png
+    Site {
+        /// URL to open.
+        url: String,
+
+        /// Path to the browser binary. Defaults to `surfer` on PATH
+        /// (headless), or `super-surfer` on PATH with --gui.
+        #[arg(long)]
+        browser_bin: Option<String>,
+
+        /// Extra arguments passed through to the browser binary.
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+
+        /// Launch a windowed browser in a fresh Xvfb instead of headless.
+        #[arg(long)]
+        gui: bool,
+
+        /// Ephemeral storage: a fresh directory removed on exit, instead
+        /// of the default persistent per-host directory.
+        #[arg(long)]
+        incognito: bool,
+
+        /// Virtual display width (--gui only).
+        #[arg(long, default_value_t = 1024)]
+        width: u32,
+
+        /// Virtual display height (--gui only).
+        #[arg(long, default_value_t = 768)]
+        height: u32,
+
+        /// Save a screenshot of the virtual display after exit (--gui only).
+        #[arg(long)]
+        screenshot: Option<String>,
+
+        /// Kill the browser after this many seconds if it hasn't exited.
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Disable network access inside the sandbox (on by default —
+        /// fetching a page needs it).
+        #[arg(long)]
+        no_network: bool,
+
+        /// Run unsandboxed (plain subprocess, no bwrap containment).
+        #[arg(long)]
+        no_sandbox: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -213,6 +272,9 @@ fn main() -> Result<()> {
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
         Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox } => {
             cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, &config, &index)
+        }
+        Command::Site { url, browser_bin, extra_args, gui, incognito, width, height, screenshot, timeout, no_network, no_sandbox } => {
+            cmd_site(&url, browser_bin.as_deref(), &extra_args, gui, incognito, width, height, screenshot.as_deref(), timeout, no_network, no_sandbox, &config)
         }
     }
 }
@@ -589,6 +651,129 @@ fn cmd_gui(
     }
 
     Ok(())
+}
+
+/// Run a browser against a URL with a real, OS-enforced per-origin storage
+/// sandbox (see `site.rs`), sandboxed via `bwrap` unless `no_sandbox`.
+#[allow(clippy::too_many_arguments)]
+fn cmd_site(
+    url: &str,
+    browser_bin: Option<&str>,
+    extra_args: &[String],
+    gui: bool,
+    incognito: bool,
+    width: u32,
+    height: u32,
+    screenshot: Option<&str>,
+    timeout: Option<u64>,
+    no_network: bool,
+    no_sandbox: bool,
+    config: &Config,
+) -> Result<()> {
+    let target = site::SiteTarget::resolve(url, config, incognito)?;
+
+    let default_bin_name = if gui { "super-surfer" } else { "surfer" };
+    let browser_path = match browser_bin {
+        Some(p) => std::path::PathBuf::from(p),
+        None => which(default_bin_name).with_context(|| {
+            format!(
+                "'{default_bin_name}' not found on PATH. Build it first: {}",
+                if gui {
+                    "cargo build --release -p super-surfer --features bliss (in surfer-browser)"
+                } else {
+                    "cargo build --release -p surfer --features cli (in surfer-browser)"
+                }
+            )
+        })?,
+    };
+    let browser_dir = browser_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let session = if gui { Some(gui::XvfbSession::start(width, height, 24)?) } else { None };
+    if let Some(s) = &session {
+        eprintln!("▶ site bucket for {} on {} ({width}x{height})", target.host, s.display);
+    } else {
+        eprintln!("▶ site bucket for {}", target.host);
+    }
+
+    let mut args = vec![url.to_string()];
+    args.extend(extra_args.iter().cloned());
+
+    let mut cmd = if no_sandbox {
+        let mut c = std::process::Command::new(&browser_path);
+        c.args(&args);
+        if let Some(s) = &session {
+            c.env("DISPLAY", &s.display);
+            c.env("XAUTHORITY", &s.xauthority);
+        }
+        c
+    } else {
+        let mut env = std::collections::HashMap::new();
+        let mut extra_ro_binds = vec![browser_dir];
+        if let Some(s) = &session {
+            env.insert("DISPLAY".to_string(), s.display.clone());
+            env.insert("XAUTHORITY".to_string(), s.xauthority.display().to_string());
+            extra_ro_binds.push(s.socket_path());
+            extra_ro_binds.push(s.xauthority.clone());
+        }
+        let profile = sandbox::SandboxProfile {
+            project_dir: Some(target.storage_dir.clone()),
+            extra_ro_binds,
+            allow_network: !no_network,
+        };
+        let args_rest = &args[..];
+        sandbox::sandboxed_command(browser_path.to_string_lossy().as_ref(), args_rest, &target.storage_dir, &env, &profile)
+    };
+
+    cmd.stdin(std::process::Stdio::inherit());
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
+
+    eprintln!("▶ running: {} {}", browser_path.display(), args.join(" "));
+    let mut child = cmd.spawn().with_context(|| format!("Failed to execute {}", browser_path.display()))?;
+
+    let status = match timeout {
+        None => child.wait()?,
+        Some(secs) => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    break status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    eprintln!("▶ timeout reached — killing");
+                    let _ = child.kill();
+                    break child.wait()?;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    };
+
+    if let Some(path) = screenshot {
+        match &session {
+            Some(s) => {
+                eprintln!("▶ screenshot -> {path}");
+                s.screenshot(Path::new(path))?;
+            }
+            None => eprintln!("⚠ --screenshot requires --gui — skipped"),
+        }
+    }
+
+    if !status.success() && timeout.is_none() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    Ok(())
+}
+
+fn which(bin: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).map(|dir| dir.join(bin)).find(|p| p.is_file())
+    })
 }
 
 fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {

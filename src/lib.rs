@@ -30,6 +30,7 @@ pub mod inventory;
 pub mod project;
 pub mod resolve;
 pub mod sandbox;
+pub mod site;
 pub mod types;
 pub mod worktree;
 

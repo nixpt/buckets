@@ -81,6 +81,16 @@ buckets worktree list /path/to/repo
 # + a session-scoped Xauthority cookie are visible inside the sandbox.
 buckets gui --screenshot /tmp/out.png --timeout 5 -- glxgears
 buckets gui node@20 --width 1280 --height 800 -- node gui-script.js
+
+# Site buckets — open a URL with a real, OS-enforced per-origin storage
+# sandbox (revives the intent behind exosphere-apps' site-capsulizer,
+# which was found unenforced scaffolding — see the README's "Site
+# buckets" section below). Defaults to a headless browser binary
+# (surfer) on PATH; --gui runs a windowed one (super-surfer) in a
+# fresh Xvfb.
+buckets site https://example.com
+buckets site https://example.com --gui --screenshot /tmp/site.png --timeout 5
+buckets site https://example.com --incognito   # ephemeral storage, removed on exit
 ```
 
 ## Real process isolation
@@ -109,6 +119,33 @@ a client with the wrong/missing `XAUTHORITY` is refused by the X server
 ("Authorization required, but no authorization protocol specified");
 the right cookie succeeds. Session cleanup (Xvfb process, socket, cookie
 file) happens on drop regardless of how the command exited.
+
+## Site buckets
+
+`buckets site <url>` runs a browser against a URL with a real, OS-enforced
+per-origin storage sandbox — reviving the intent behind exosphere-apps'
+`exo-site-capsulizer` (storage-capsule/net-capsule/worker-capsule), which
+was found to be ~95% unenforced scaffolding (`check_request()` never
+called, storage VFS dead code, workers never started) and replaced in
+`surfer-browser` with a shim explicitly documented as "not an enforcement
+layer" — real privacy there is a JS `fetch`/`XHR` interceptor, still
+in-process, still not real OS isolation.
+
+`buckets site` gets the enforcement for free from the sandboxing this
+project already has: each host gets its own read-write bind
+(`$BUCKETS_CACHE_DIR/sites/<host>/`, persistent — real browsing-profile
+semantics — or `--incognito` for a tempdir removed on exit) and nothing
+else on the host is visible inside the sandbox. Headless by default
+(`surfer` on PATH); `--gui` runs a windowed browser (`super-surfer`) inside
+a fresh Xvfb, same mechanism as `buckets gui`. Neither browser binary is
+built by buckets itself — build it once in `surfer-browser` (`cargo build
+--release -p surfer --features cli` for headless, `-p super-surfer
+--features bliss` for GUI), then point `buckets site` at it (PATH lookup
+by default, or `--browser-bin <path>`).
+
+Not built: per-domain/third-party network filtering (still just the
+existing coarse network on/off toggle) and building the browser binary
+itself (a separate, one-time `cargo build`, not part of this command).
 
 ## Spec format
 
@@ -172,6 +209,7 @@ file) happens on drop regardless of how the command exited.
 | `worktree remove <repo> <path> <branch> [--force]` | Remove a worktree + its branch (git refuses if unmerged, unless --force) |
 | `worktree list <repo>` | List existing worktrees |
 | `gui [specs] -- <cmd> [--screenshot <path>] [--timeout <secs>] [--width <N>] [--height <N>]` | Run a GUI command in a sandboxed bucket against a fresh Xvfb X server |
+| `site <url> [--browser-bin <path>] [--gui] [--incognito] [--screenshot <path>] [--timeout <secs>]` | Open a URL with a real per-origin storage sandbox |
 
 ## Configuration
 

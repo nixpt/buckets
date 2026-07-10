@@ -29,9 +29,13 @@ separate build machinery) → `gui` (Xvfb X-server session lifecycle for
 `buckets gui` — a fresh, isolated display + session-scoped Xauthority
 cookie per session, concept borrowed from x11docker; needed zero changes
 to `sandbox.rs` itself, since `extra_ro_binds`/`env` were already
-generic enough to carry the socket/cookie/DISPLAY through) → `main`
-(the `buckets` CLI, the only consumer of all of the above). Full
-pipeline description in `src/lib.rs`'s crate doc.
+generic enough to carry the socket/cookie/DISPLAY through) → `site`
+(per-origin storage isolation for `buckets site` — persistent
+host-keyed dir, or a tempdir for `--incognito`; the real enforcement is
+`sandbox.rs`'s bwrap bind, not this module — revives exosphere-apps'
+site-capsulizer intent, whose original in-process VFS was found
+unenforced) → `main` (the `buckets` CLI, the only consumer of all of
+the above). Full pipeline description in `src/lib.rs`'s crate doc.
 
 `worktree`'s default worktree location is a SIBLING of the source repo,
 not a fixed cache dir — found live that a fixed location breaks any
@@ -50,7 +54,7 @@ actually work against the real network/filesystem."
 
 ```bash
 cargo build
-cargo test    # 64 tests, all unit-level (no network) — see the live-testing note above
+cargo test    # 71 tests, all unit-level (no network) — see the live-testing note above
 cargo doc --no-deps    # should produce zero warnings
 ```
 
