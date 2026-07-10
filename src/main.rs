@@ -17,6 +17,7 @@ mod project;
 mod resolve;
 mod sandbox;
 mod types;
+mod worktree;
 
 use config::Config;
 use index::Index;
@@ -109,6 +110,51 @@ enum Command {
         #[arg(long)]
         no_sandbox: bool,
     },
+
+    /// Ephemeral git worktrees — a task gets its own working copy at a
+    /// fresh branch (cheap: shares the repo's object store, not a full
+    /// clone), buildable via `buckets build <worktree path>` like any
+    /// other local path. "Destroyed once you merge": `remove` uses `git
+    /// branch -d`, which git itself refuses on an unmerged branch — pass
+    /// --force to discard anyway.
+    #[command(subcommand)]
+    Worktree(WorktreeCommand),
+}
+
+#[derive(Subcommand)]
+enum WorktreeCommand {
+    /// Create a worktree at a fresh (or existing) branch. Prints the
+    /// worktree's path on success (the argument to hand to `buckets
+    /// build`/`run`/`shell` next).
+    Create {
+        /// Path to the git repo to branch off of.
+        repo: String,
+        /// Branch name for the new worktree.
+        branch: String,
+        /// Base branch/commit to branch from (default: repo's current HEAD).
+        #[arg(long)]
+        from: Option<String>,
+    },
+
+    /// Remove a worktree, and its branch if it's merged (git's own `git
+    /// branch -d` refusal is the safety check — not reimplemented here).
+    Remove {
+        /// Path to the git repo the worktree belongs to.
+        repo: String,
+        /// Path to the worktree to remove.
+        worktree_path: String,
+        /// Branch name to also try deleting.
+        branch: String,
+        /// Discard even if unmerged/dirty (git worktree remove --force + git branch -D).
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// List existing worktrees for a repo.
+    List {
+        /// Path to the git repo.
+        repo: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -125,6 +171,7 @@ fn main() -> Result<()> {
         Command::Build { path_or_url, test, run, no_sandbox } => {
             cmd_build(&path_or_url, test, run, no_sandbox, &config, &index)
         }
+        Command::Worktree(cmd) => cmd_worktree(cmd, &config),
     }
 }
 
@@ -407,4 +454,21 @@ fn run_project_step(
         anyhow::bail!("{label} failed (exit {})", status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {
+    match cmd {
+        WorktreeCommand::Create { repo, branch, from } => {
+            let path = worktree::create(Path::new(&repo), &branch, from.as_deref(), config.worktree_dir.as_deref())?;
+            println!("{}", path.display());
+            Ok(())
+        }
+        WorktreeCommand::Remove { repo, worktree_path, branch, force } => {
+            worktree::remove(Path::new(&repo), Path::new(&worktree_path), &branch, force)
+        }
+        WorktreeCommand::List { repo } => {
+            print!("{}", worktree::list(Path::new(&repo))?);
+            Ok(())
+        }
+    }
 }

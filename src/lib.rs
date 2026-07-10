@@ -30,6 +30,7 @@ pub mod project;
 pub mod resolve;
 pub mod sandbox;
 pub mod types;
+pub mod worktree;
 
 pub use config::Config;
 pub use index::Index;

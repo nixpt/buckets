@@ -13,6 +13,17 @@ pub struct Config {
     pub dist_url: String,
     /// Cache directory for downloaded bottles.
     pub cache_dir: PathBuf,
+    /// Explicit override for the parent directory of `buckets
+    /// worktree`-created worktrees. `None` (the default) means "create the
+    /// worktree as a sibling of the source repo" — resolved per-call in
+    /// `worktree::create`, not here, since it depends on which repo is
+    /// being operated on. Found live: defaulting this to a fixed location
+    /// like `~/.buckets/worktrees/` broke every relative sibling
+    /// path-dependency a repo had (`../other-repo`, this workspace's own
+    /// convention) — the worktree was no longer sitting next to its
+    /// siblings. Sibling-of-the-repo is also the more common git-worktree
+    /// convention generally, not just a fix for this workspace.
+    pub worktree_dir: Option<PathBuf>,
     /// Platform string (e.g. "linux/x86_64").
     pub platform: String,
 }
@@ -21,8 +32,11 @@ impl Config {
     /// Create a new config from environment variables or defaults.
     ///
     /// Env vars:
-    /// - `BUCKETS_DIST_URL` ��� override the dist server URL
+    /// - `BUCKETS_DIST_URL` — override the dist server URL
     /// - `BUCKETS_CACHE_DIR` — override the cache directory
+    /// - `BUCKETS_WORKTREE_DIR` — override the worktree parent directory
+    ///   (default: create as a sibling of the source repo — see
+    ///   `worktree_dir`'s doc comment)
     pub fn new() -> Self {
         let dist_url = std::env::var("BUCKETS_DIST_URL")
             .unwrap_or_else(|_| "https://dist.pkgx.dev".to_string());
@@ -35,11 +49,14 @@ impl Config {
             }
         };
 
+        let worktree_dir = std::env::var("BUCKETS_WORKTREE_DIR").ok().map(PathBuf::from);
+
         let platform = crate::types::platform_prefix();
 
         Self {
             dist_url,
             cache_dir,
+            worktree_dir,
             platform,
         }
     }

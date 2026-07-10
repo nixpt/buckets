@@ -22,9 +22,18 @@ protocol — see the README's "Features borrowed from pkgx" section.
 (download/extract) → `env` (compose PATH/etc.) → `sandbox` (bwrap process
 isolation — real containment, not just an isolated toolchain version) →
 `project` (git-clone/local-path source resolution + build-system
-detection for `buckets build`) → `main` (the `buckets` CLI, the only
-consumer of all of the above). Full pipeline description in `src/lib.rs`'s
-crate doc.
+detection for `buckets build`) → `worktree` (ephemeral git worktrees for
+`buckets worktree` — a thin wrapper over `git worktree`/`git branch -d`;
+produces a path `buckets build`/`run`/`shell` can target directly, no
+separate build machinery) → `main` (the `buckets` CLI, the only consumer
+of all of the above). Full pipeline description in `src/lib.rs`'s crate
+doc.
+
+`worktree`'s default worktree location is a SIBLING of the source repo,
+not a fixed cache dir — found live that a fixed location breaks any
+relative sibling path-dependency (`../other-repo`, this workspace's own
+convention) since the worktree is no longer sitting next to its
+siblings. `BUCKETS_WORKTREE_DIR` overrides this default.
 
 Live-testing this project against real dist-server requests and real
 builds has repeatedly found bugs `cargo test`'s pure-unit-level suite
@@ -37,7 +46,7 @@ actually work against the real network/filesystem."
 
 ```bash
 cargo build
-cargo test    # 55 tests, all unit-level (no network) — see the live-testing note above
+cargo test    # 61 tests, all unit-level (no network) — see the live-testing note above
 cargo doc --no-deps    # should produce zero warnings
 ```
 

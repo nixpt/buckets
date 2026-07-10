@@ -44,3 +44,17 @@ Rejected alternatives:
 Outcome:
 sandbox.rs (bwrap-based, unit-tested arg-building + live-verified: normal exec works, write outside grants fails, write inside cwd succeeds), project.rs (source resolution + 5-language build detection), buckets build subcommand — all wired through the same resolve/install engine. Found 3 more real bugs via live testing (matching this project's now-established pattern of cargo test passing while real network/filesystem behavior was still broken): (1) --chdir failed because run/shell never bound the invocation cwd into the sandbox: fixed by treating cwd as a rw project_dir bind. (2) companion resolution was only one level deep, so rust's companion-of-a-companion (cargo needs openssl@^1.1, but cargo itself is only reachable as rust's companion) was silently dropped: fixed by making companion collection a proper transitive worklist/BFS, with an honestly-documented known gap (no constraint-intersection when two paths want the same companion under different constraints). (3) sharing the network namespace (omitting --unshare-net) doesn't give working DNS on its own: cargo's crates.io fetch failed with 'Could not resolve host' because /etc/resolv.conf wasn't bound into the fresh mount namespace — fixed by ro-binding resolv.conf/hosts/nsswitch.conf/ssl/ca-certificates when allow_network is set. Verified end-to-end: a real Rust crate (exo-light's capsule-contract) built AND tested successfully via local path; a real 16-crate workspace (interactd) cloned fresh via git URL and built successfully, all inside the sandbox. 55 tests, cargo doc clean.
 
+
+## 2026-07-10T10:39:57-05:00 — [STRATEGIC] [VERIFIED] [ARCHITECTURAL] Worktree buckets — sibling-of-repo default, found via live testing (same class of bug as before)
+
+Reason:
+Second phase of the fleet-expansion roadmap: 'buckets worktree create <repo> <branch>' gives a task its own working copy at a fresh branch (git worktree add, not a full clone), buildable via the EXISTING buckets build/run/shell against the resulting path — no new build machinery needed, worktree creation just produces a path. Destroyed-once-merged semantics come from git itself: 'remove' shells out to git branch -d, which git refuses on an unmerged branch — that refusal IS the safety check, not reimplemented.
+
+Artifacts: src/worktree.rs,src/config.rs,src/main.rs
+
+Rejected alternatives:
+- **default worktree location to a fixed cache dir (~/.buckets/worktrees/)**: found live this breaks EVERY relative sibling path-dependency a repo has (../other-repo, this workspace's own convention) since the worktree is no longer sitting next to its siblings — contextgc's own optional uno dep resolved to a nonsensical path. Sibling-of-the-repo is also the more common general git-worktree convention, not just a fix for this workspace.
+
+Outcome:
+worktree.rs (create/remove/list, unit-tested incl. the sibling-default regression test), buckets worktree create/remove/list subcommands. Verified live end-to-end against contextgc: create -> build --test succeeds unsandboxed (sandboxed hits the SAME already-documented cross-repo-sandbox-grant limitation from the build/sandbox pass, not a new bug) -> full safety-property proof (remove without --force on a genuinely-diverged unmerged branch: worktree removed, branch correctly preserved with a clear warning; merge; remove again: branch deletion succeeds now that it's actually merged). 61 tests (was 55), cargo doc clean.
+

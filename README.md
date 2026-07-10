@@ -65,6 +65,16 @@ buckets list
 buckets build /path/to/repo
 buckets build https://github.com/owner/repo --test
 buckets build . --test --run
+
+# Ephemeral worktrees — a task gets its own working copy at a fresh
+# branch (git worktree add, not a full clone — cheap, shares the repo's
+# object store). Build/test it like any other local path. "Destroyed
+# once you merge": removing an unmerged worktree's branch is refused by
+# git itself (git branch -d's own safety check) unless --force.
+buckets worktree create /path/to/repo my-task-branch
+buckets build "$(buckets worktree create /path/to/repo my-task-branch)" --test
+buckets worktree remove /path/to/repo /path/to/repo-my-task-branch my-task-branch
+buckets worktree list /path/to/repo
 ```
 
 ## Real process isolation
@@ -136,6 +146,9 @@ do). Falls back to a plain unsandboxed subprocess with a warning if
 | `info <specs>` | Show resolution without installing |
 | `list` | Show cached installations |
 | `build <path-or-url> [--test] [--run]` | Detect + build (+ test/run) a real project, sandboxed |
+| `worktree create <repo> <branch> [--from <base>]` | Create an ephemeral worktree (prints its path) |
+| `worktree remove <repo> <path> <branch> [--force]` | Remove a worktree + its branch (git refuses if unmerged, unless --force) |
+| `worktree list <repo>` | List existing worktrees |
 
 ## Configuration
 
@@ -143,6 +156,12 @@ do). Falls back to a plain unsandboxed subprocess with a warning if
 |---|---|---|
 | `BUCKETS_DIST_URL` | `https://dist.pkgx.dev` | Distribution server URL |
 | `BUCKETS_CACHE_DIR` | `~/.cache/buckets/` or `~/.buckets/` | Local cache directory |
+| `BUCKETS_WORKTREE_DIR` | sibling of the source repo | Parent directory for `worktree create` (see below) |
+
+`BUCKETS_WORKTREE_DIR` defaults to creating each worktree as a sibling of
+its source repo (`/path/to/repo-my-branch` next to `/path/to/repo`), not
+a fixed cache location — required for relative sibling path-dependencies
+(`../other-repo`) to keep resolving correctly from inside the worktree.
 
 ## Features borrowed from pkgx
 

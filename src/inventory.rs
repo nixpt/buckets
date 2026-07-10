@@ -110,6 +110,7 @@ mod tests {
         let config = Config {
             dist_url: "https://dist.pkgx.dev".to_string(),
             cache_dir: std::path::PathBuf::from("/tmp/test"),
+            worktree_dir: None,
             platform: "linux/x86-64".to_string(),
         };
         assert_eq!(
