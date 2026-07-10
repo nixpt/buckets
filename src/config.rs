@@ -1,9 +1,15 @@
+//! Runtime configuration: distribution server URL, cache directory, and
+//! platform string, resolved from `BUCKETS_DIST_URL`/`BUCKETS_CACHE_DIR`
+//! env vars or sane defaults. Threaded through every stage of the pipeline
+//! ([`crate::inventory`], [`crate::install`], [`crate::cellar`]) so none of
+//! them hardcode paths or URLs directly.
+
 use std::path::PathBuf;
 
 /// Configuration for buckets.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Base distribution URL (e.g. "https://dist.pkgx.dev").
+    /// Base distribution URL (e.g. <https://dist.pkgx.dev>).
     pub dist_url: String,
     /// Cache directory for downloaded bottles.
     pub cache_dir: PathBuf,

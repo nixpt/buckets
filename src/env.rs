@@ -1,3 +1,9 @@
+//! Environment composition: given a set of [`Installation`]s, scan their
+//! standard subdirectories (`bin/`, `lib/`, `include/`, `share/`, ...) into
+//! the shell variables a runtime needs (`PATH`, `LD_LIBRARY_PATH`, ...).
+//! The last step of the resolve pipeline, and what `buckets env`/`buckets
+//! shell` expose directly.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 

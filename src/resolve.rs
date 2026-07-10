@@ -1,3 +1,10 @@
+//! Top-level resolution pipeline: parse a spec → resolve its alias → collect
+//! companion packages → pick a version (cached, else best remote match) →
+//! install → compose a runnable environment. [`resolve`] handles one spec;
+//! [`resolve_multi`] does the same for several at once, deduplicating shared
+//! dependencies and composing one unified environment (what `buckets run
+//! node@20 python@3.11 -- ...` uses).
+
 use anyhow::{bail, Context, Result};
 
 use crate::cellar;

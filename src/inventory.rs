@@ -1,3 +1,8 @@
+//! Remote version discovery: fetch a project's `versions.txt` from the dist
+//! server and pick the best version matching a semver constraint. Consulted
+//! by the [`crate::resolve` module](mod@crate::resolve) only when [`crate::cellar`] has no cached version
+//! that already satisfies the request.
+
 use anyhow::{Context, Result};
 use semver::{Version, VersionReq};
 use std::io::BufRead;

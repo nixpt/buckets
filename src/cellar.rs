@@ -1,3 +1,9 @@
+//! Local cache inspection and the `v*` / `v<major>` / `v<major.minor>`
+//! symlink scheme: is a version already installed, what versions are
+//! cached, and keeping those "latest in range" symlinks current after an
+//! install. [`crate::resolve` module](mod@crate::resolve) checks here first, before ever hitting the
+//! network via [`crate::inventory`].
+
 use anyhow::{Context, Result};
 use semver::Version;
 use std::fs;

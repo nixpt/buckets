@@ -1,3 +1,8 @@
+//! Bottle download + extraction: fetch a `.tar.xz` bottle from the dist
+//! server, stream-decompress it into a temp directory, then atomically
+//! rename it into the cache (crash-safe — a killed download never leaves a
+//! half-extracted directory `is_installed` would mistake for complete).
+
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::fs;

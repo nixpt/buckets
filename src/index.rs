@@ -1,3 +1,8 @@
+//! The built-in alias index: shorthand names (`node`) to their pkgx pantry
+//! project names (`nodejs.org`), the binaries each project provides, and
+//! companion packages to auto-include (e.g. `openssl` alongside `curl`).
+//! [`crate::resolve` module](mod@crate::resolve) consults this before doing any network/cache work.
+
 use std::collections::HashMap;
 
 /// A curated index of commonly-used tools, mapping shorthand names

@@ -1,3 +1,9 @@
+//! Shared types threaded through the whole pipeline: [`PackageReq`] (a
+//! parsed, not-yet-resolved spec like `node@^20`) → [`Package`] (pinned to
+//! an exact version) → [`Installation`] (pinned + a real cache path) →
+//! [`ResolvedEnvironment`] (one or more installations plus their composed
+//! env vars — what [`crate::resolve::resolve_multi`] ultimately returns).
+
 use anyhow::Result;
 use regex::Regex;
 use semver::{Version, VersionReq};

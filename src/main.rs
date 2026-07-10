@@ -1,3 +1,8 @@
+//! CLI entry point: `run`/`shell`/`env`/`info`/`list` subcommands (clap),
+//! each driving [`resolve::resolve_multi`] then either exec'ing a command,
+//! opening a shell, or printing the composed environment. See the
+//! top-level README for the full command reference and spec format.
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
