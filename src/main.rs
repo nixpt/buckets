@@ -10,6 +10,7 @@ use std::path::Path;
 mod cellar;
 mod config;
 mod env;
+mod gui;
 mod index;
 mod install;
 mod inventory;
@@ -119,6 +120,44 @@ enum Command {
     /// --force to discard anyway.
     #[command(subcommand)]
     Worktree(WorktreeCommand),
+
+    /// Run a GUI command against a fresh, isolated Xvfb X server — the
+    /// sandboxed process gets its own X display, not the host's real one.
+    ///
+    /// Usage:
+    ///   buckets gui -- glxgears --screenshot /tmp/out.png --timeout 5
+    ///   buckets gui node@20 -- node gui-script.js
+    Gui {
+        /// Runtime spec(s) — may be empty (a GUI test often just needs a
+        /// system binary already on PATH, no resolved toolchain).
+        specs: Vec<String>,
+
+        /// Command and arguments to run
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+
+        /// Save a screenshot of the virtual display (root window) to this
+        /// path after the command exits or is killed by --timeout.
+        #[arg(long)]
+        screenshot: Option<String>,
+
+        /// Kill the command after this many seconds if it hasn't exited
+        /// (GUI apps often have no natural exit).
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Virtual display width.
+        #[arg(long, default_value_t = 1024)]
+        width: u32,
+
+        /// Virtual display height.
+        #[arg(long, default_value_t = 768)]
+        height: u32,
+
+        /// Run unsandboxed (plain subprocess, no bwrap containment).
+        #[arg(long)]
+        no_sandbox: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -172,6 +211,9 @@ fn main() -> Result<()> {
             cmd_build(&path_or_url, test, run, no_sandbox, &config, &index)
         }
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
+        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox } => {
+            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, &config, &index)
+        }
     }
 }
 
@@ -453,6 +495,99 @@ fn run_project_step(
     if !status.success() {
         anyhow::bail!("{label} failed (exit {})", status.code().unwrap_or(1));
     }
+    Ok(())
+}
+
+/// Run a GUI command against a fresh Xvfb X server, sandboxed via `bwrap`
+/// unless `no_sandbox` is set. See `gui.rs` for the Xvfb session lifecycle
+/// and why the sandboxing core (`sandbox.rs`) needed zero changes for this.
+#[allow(clippy::too_many_arguments)]
+fn cmd_gui(
+    specs: &[String],
+    command: &[String],
+    screenshot: Option<&str>,
+    timeout: Option<u64>,
+    width: u32,
+    height: u32,
+    no_sandbox: bool,
+    config: &Config,
+    index: &Index,
+) -> Result<()> {
+    let session = gui::XvfbSession::start(width, height, 24)?;
+    eprintln!("▶ gui bucket on {} ({width}x{height})", session.display);
+
+    let (resolved_env, resolved_installations) = if specs.is_empty() {
+        (std::collections::HashMap::new(), Vec::new())
+    } else {
+        let resolved = resolve::resolve_multi(specs, config, index)
+            .with_context(|| format!("Failed to resolve specs: {}", specs.join(", ")))?;
+        (resolved.env, resolved.installations)
+    };
+
+    let (program, args) = command.split_first().context("No command specified")?;
+
+    let mut cmd = if no_sandbox {
+        let mut c = std::process::Command::new(program);
+        c.args(args);
+        for (key, value) in &resolved_env {
+            c.env(key, value);
+        }
+        c.env("DISPLAY", &session.display);
+        c.env("XAUTHORITY", &session.xauthority);
+        c
+    } else {
+        let cwd = std::env::current_dir()?;
+        let mut env = resolved_env.clone();
+        env.insert("DISPLAY".to_string(), session.display.clone());
+        env.insert("XAUTHORITY".to_string(), session.xauthority.display().to_string());
+
+        let mut extra_ro_binds: Vec<std::path::PathBuf> =
+            resolved_installations.iter().map(|i| i.path.clone()).collect();
+        extra_ro_binds.push(session.socket_path());
+        extra_ro_binds.push(session.xauthority.clone());
+
+        let profile = sandbox::SandboxProfile {
+            project_dir: Some(cwd.clone()),
+            extra_ro_binds,
+            allow_network: false,
+        };
+        sandbox::sandboxed_command(program, args, &cwd, &env, &profile)
+    };
+
+    cmd.stdin(std::process::Stdio::inherit());
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
+
+    eprintln!("▶ running: {}", command.join(" "));
+    let mut child = cmd.spawn().with_context(|| format!("Failed to execute {program}"))?;
+
+    let status = match timeout {
+        None => child.wait()?,
+        Some(secs) => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    break status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    eprintln!("▶ timeout reached — killing");
+                    let _ = child.kill();
+                    break child.wait()?;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    };
+
+    if let Some(path) = screenshot {
+        eprintln!("▶ screenshot -> {path}");
+        session.screenshot(Path::new(path))?;
+    }
+
+    if !status.success() && timeout.is_none() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
     Ok(())
 }
 

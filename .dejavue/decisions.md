@@ -58,3 +58,14 @@ Rejected alternatives:
 Outcome:
 worktree.rs (create/remove/list, unit-tested incl. the sibling-default regression test), buckets worktree create/remove/list subcommands. Verified live end-to-end against contextgc: create -> build --test succeeds unsandboxed (sandboxed hits the SAME already-documented cross-repo-sandbox-grant limitation from the build/sandbox pass, not a new bug) -> full safety-property proof (remove without --force on a genuinely-diverged unmerged branch: worktree removed, branch correctly preserved with a clear warning; merge; remove again: branch deletion succeeds now that it's actually merged). 61 tests (was 55), cargo doc clean.
 
+
+## 2026-07-10T11:02:38-05:00 — [STRATEGIC] [VERIFIED] [ARCHITECTURAL] GUI buckets: fresh Xvfb per session, not host display
+
+Reason:
+Captain wanted GUI apps runnable inside a bucket, borrowing x11docker's isolation concept. x11docker itself is docker/podman-only (zero bwrap to reuse, grepped its ~7000-line script) — its real mechanism is a session-scoped Xauthority cookie + binding only the ONE socket file, never the whole /tmp/.X11-unix dir, plus a nested X server so the sandboxed app can't see the real display. Reimplemented that concept from scratch in gui.rs, bwrap-shaped, matching this project's standalone stance.
+
+Artifacts: src/gui.rs, main.rs cmd_gui, README.md GUI section, live-verified via glxgears --screenshot (real gears rendered) + wrong-XAUTHORITY-refused + clean Xvfb/socket/cookie teardown after SIGTERM-first Drop fix
+
+Rejected alternatives:
+- **xauth generate before starting Xvfb (fails — needs a live X connection that doesn't exist yet); --hostdisplay-style reuse of the real :0 session (X11 has no per-client window isolation, would expose every other window); SIGKILL-only cleanup (found live**: leaves a dead /tmp/.X11-unix/X<N> socket behind since Xvfb never gets to unlink it, permanently skipping that display number forever)
+

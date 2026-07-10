@@ -75,6 +75,12 @@ buckets worktree create /path/to/repo my-task-branch
 buckets build "$(buckets worktree create /path/to/repo my-task-branch)" --test
 buckets worktree remove /path/to/repo /path/to/repo-my-task-branch my-task-branch
 buckets worktree list /path/to/repo
+
+# GUI buckets — run a GUI app against a fresh, isolated Xvfb X server
+# (not the host's real display). Only the throwaway server's own socket
+# + a session-scoped Xauthority cookie are visible inside the sandbox.
+buckets gui --screenshot /tmp/out.png --timeout 5 -- glxgears
+buckets gui node@20 --width 1280 --height 800 -- node gui-script.js
 ```
 
 ## Real process isolation
@@ -87,6 +93,22 @@ else on the host is. Network is off by default for `run`/`shell` (most
 tool invocations don't need it) and on for `build` (package registries
 do). Falls back to a plain unsandboxed subprocess with a warning if
 `bwrap` isn't installed — use `--no-sandbox` to opt out explicitly.
+
+## Real GUI isolation
+
+`buckets gui` runs a GUI command against a brand-new [`Xvfb`](https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml)
+X server, not the host's real `:0`. Borrows the concept from
+[x11docker](https://github.com/mviereck/x11docker) — a session-scoped
+MIT-MAGIC-COOKIE Xauthority cookie, generated fresh per session and bound
+into the sandbox alongside exactly ONE file (the specific `/tmp/.X11-unix/X<N>`
+socket, never the whole directory) plus `DISPLAY`/`XAUTHORITY` env vars.
+Deliberately a nested server, not a `--hostdisplay`-style reuse of the real
+session — X11 has no native per-client window isolation, so a fresh `Xvfb`
+instance means nothing on the real display is ever exposed. Verified live:
+a client with the wrong/missing `XAUTHORITY` is refused by the X server
+("Authorization required, but no authorization protocol specified");
+the right cookie succeeds. Session cleanup (Xvfb process, socket, cookie
+file) happens on drop regardless of how the command exited.
 
 ## Spec format
 
@@ -149,6 +171,7 @@ do). Falls back to a plain unsandboxed subprocess with a warning if
 | `worktree create <repo> <branch> [--from <base>]` | Create an ephemeral worktree (prints its path) |
 | `worktree remove <repo> <path> <branch> [--force]` | Remove a worktree + its branch (git refuses if unmerged, unless --force) |
 | `worktree list <repo>` | List existing worktrees |
+| `gui [specs] -- <cmd> [--screenshot <path>] [--timeout <secs>] [--width <N>] [--height <N>]` | Run a GUI command in a sandboxed bucket against a fresh Xvfb X server |
 
 ## Configuration
 

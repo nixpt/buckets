@@ -25,9 +25,13 @@ isolation — real containment, not just an isolated toolchain version) →
 detection for `buckets build`) → `worktree` (ephemeral git worktrees for
 `buckets worktree` — a thin wrapper over `git worktree`/`git branch -d`;
 produces a path `buckets build`/`run`/`shell` can target directly, no
-separate build machinery) → `main` (the `buckets` CLI, the only consumer
-of all of the above). Full pipeline description in `src/lib.rs`'s crate
-doc.
+separate build machinery) → `gui` (Xvfb X-server session lifecycle for
+`buckets gui` — a fresh, isolated display + session-scoped Xauthority
+cookie per session, concept borrowed from x11docker; needed zero changes
+to `sandbox.rs` itself, since `extra_ro_binds`/`env` were already
+generic enough to carry the socket/cookie/DISPLAY through) → `main`
+(the `buckets` CLI, the only consumer of all of the above). Full
+pipeline description in `src/lib.rs`'s crate doc.
 
 `worktree`'s default worktree location is a SIBLING of the source repo,
 not a fixed cache dir — found live that a fixed location breaks any
@@ -46,12 +50,15 @@ actually work against the real network/filesystem."
 
 ```bash
 cargo build
-cargo test    # 61 tests, all unit-level (no network) — see the live-testing note above
+cargo test    # 64 tests, all unit-level (no network) — see the live-testing note above
 cargo doc --no-deps    # should produce zero warnings
 ```
 
 `bwrap` (bubblewrap) must be installed for real sandboxing; `buckets`
 still works without it (falls back to unsandboxed exec with a warning).
+`buckets gui` additionally needs `Xvfb`, `xauth`, `mcookie` (util-linux),
+and (only if `--screenshot` is used) ImageMagick's `import` — checked
+lazily, with clear errors, not required for any other subcommand.
 
 No `CARGO_TARGET_DIR` redirection needed — standalone crate, no path-deps
 on any peer project.
