@@ -1,0 +1,25 @@
+[package]
+name = "buckets"
+version = "0.1.0"
+description = "Throwaway runtime buckets for AI agents — resolve, fetch, and run any tool in an isolated environment"
+edition = "2021"
+
+[[bin]]
+name = "buckets"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+ureq = { version = "2", features = ["gzip"] }
+tar = "0.4"
+xz2 = "0.1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
