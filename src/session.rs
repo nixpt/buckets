@@ -22,9 +22,8 @@
 //! - `zram`: upper dir on a zram compressed RAM device. Fast+compact (`--zram`).
 
 use anyhow::{bail, Context, Result};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
@@ -51,6 +50,7 @@ pub struct SessionConfig {
 }
 
 /// A running session with its overlay mount and optional child process.
+#[allow(dead_code)]
 pub struct Session {
     pub config: SessionConfig,
     pub resolved: Option<ResolvedEnvironment>,
@@ -92,20 +92,12 @@ fn generate_session_id() -> String {
 }
 
 fn os_urandom_hex(n: usize) -> String {
-    use std::fs::File;
-    use std::io::Read;
-    let mut f = File::open("/dev/urandom").unwrap_or_else(|_| {
-        // Fallback for non-Linux or test environments
-        let mut file = File::create("/dev/urandom").unwrap_or_else(|_| {
-            // Create a dummy file for tests
-            // This will panic in non-Linux, but buckets only runs on Linux anyway
-            panic!("no /dev/urandom")
-        });
-        file
-    });
     let mut buf = vec![0u8; n];
-    f.read_exact(&mut buf).unwrap_or_default();
-    buf.iter().map(|b| format!("{b:02x}").to_string()).collect()
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut buf);
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ── OverlayFS helpers ───────────────────────────────────────────────
@@ -235,7 +227,7 @@ pub fn list_sessions(config: &Config) -> Result<Vec<SessionConfig>> {
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().to_string();
+        let _name = entry.file_name().to_string_lossy().to_string();
         let config_path = entry.path().join("config.toml");
         if config_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&config_path) {
@@ -338,7 +330,7 @@ pub fn session_start(
         let env = env::compose_env(&resolved.installations);
 
         let session_mount = mount_pt.to_string_lossy().to_string();
-        let mut extra_ro_binds: Vec<PathBuf> = resolved
+        let extra_ro_binds: Vec<PathBuf> = resolved
             .installations
             .iter()
             .map(|i| i.path.clone())
@@ -366,7 +358,7 @@ pub fn session_start(
         cfg.pid = Some(child_proc.id() as u64);
 
         // Spawn a keeper thread that waits for the process
-        let mount_pt_clone = mount_str.to_string();
+        let _mount_pt_clone = mount_str.to_string();
         let session_id_clone = session_id.clone();
         std::thread::spawn(move || {
             let mut child = child_proc;
@@ -379,7 +371,7 @@ pub fn session_start(
     save_session(config, &cfg)?;
 
     let backing_desc = if use_zram {
-        "zram"
+        "zram".to_string()
     } else if use_tmpfs {
         format!("tmpfs({})", size.unwrap_or("4G"))
     } else {
@@ -437,7 +429,7 @@ pub fn session_exec(
     let cwd = std::env::current_dir()?;
     let session_mount = cfg.mount_point.clone();
 
-    let mut extra_ro_binds: Vec<PathBuf> = cfg
+    let extra_ro_binds: Vec<PathBuf> = cfg
         .toolchain_dirs
         .iter()
         .map(PathBuf::from)

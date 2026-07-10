@@ -17,6 +17,7 @@ mod inventory;
 mod project;
 mod resolve;
 mod sandbox;
+mod session;
 mod types;
 mod worktree;
 
@@ -157,7 +158,28 @@ enum Command {
         /// Run unsandboxed (plain subprocess, no bwrap containment).
         #[arg(long)]
         no_sandbox: bool,
+
+        /// Start x11vnc on this port for remote viewing of the virtual display.
+        #[arg(long)]
+        vnc_port: Option<u16>,
+
+        /// VNC password (default: no password).
+        #[arg(long)]
+        vnc_password: Option<String>,
+
+        /// Serve a noVNC web UI alongside the VNC server.
+        #[arg(long)]
+        web: bool,
     },
+
+    /// Manage persistent sessions with OverlayFS isolation.
+    ///
+    /// Sessions share a writable overlay filesystem across multiple
+    /// `session exec` calls — files written by one command survive
+    /// into the next. Backed by disk (default), tmpfs (--tmpfs), or
+    /// zram (--zram).
+    #[command(subcommand)]
+    Session(SessionCommand),
 }
 
 #[derive(Subcommand)]
@@ -196,6 +218,82 @@ enum WorktreeCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// Start a new persistent session.
+    ///
+    /// Resolves toolchains, creates an OverlayFS mount, and optionally
+    /// runs a command under bwrap with the overlay bound at /session/.
+    ///
+    /// Usage:
+    ///   buckets session start node@20
+    ///   buckets session start --tmpfs python@3.11
+    ///   buckets session start node@20 python@3.11 -- node script.js
+    Start {
+        /// Runtime spec(s) — can specify multiple like "node@20" "python@3.11"
+        specs: Vec<String>,
+
+        /// Command and arguments to run inside the session (optional)
+        #[arg(last = true)]
+        command: Vec<String>,
+
+        /// Use tmpfs for the overlay upper dir (faster, ephemeral, default 4G)
+        #[arg(long)]
+        tmpfs: bool,
+
+        /// Use zram for the overlay upper dir (compressed RAM)
+        #[arg(long)]
+        zram: bool,
+
+        /// Size for tmpfs/zram backing (e.g. "2G", "512M"). Default: "4G"
+        #[arg(long)]
+        size: Option<String>,
+    },
+
+    /// Execute a command in an existing session.
+    ///
+    /// The command runs under bwrap with the session's overlay mount
+    /// bound at /session/. Files written by previous exec calls are
+    /// visible.
+    ///
+    /// Usage:
+    ///   buckets session exec <session-id> -- node another-script.js
+    Exec {
+        /// Session ID
+        session_id: String,
+
+        /// Command and arguments to run in the session
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+
+    /// Stop and optionally destroy a session.
+    ///
+    /// Unmounts the overlay. Without --purge, the session state (upper
+    /// dir) is preserved but unmounted.
+    ///
+    /// Usage:
+    ///   buckets session stop <session-id>
+    ///   buckets session stop --purge <session-id>
+    Stop {
+        /// Session ID to stop
+        session_id: String,
+
+        /// Also remove the session upper/work dirs
+        #[arg(long)]
+        purge: bool,
+    },
+
+    /// List active sessions.
+    ///
+    /// Shows session ID, specs, backing type, age, and PID.
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::new();
@@ -211,9 +309,10 @@ fn main() -> Result<()> {
             cmd_build(&path_or_url, test, run, no_sandbox, &config, &index)
         }
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
-        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox } => {
-            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, &config, &index)
+        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password, web } => {
+            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, vnc_port, vnc_password.as_deref(), web, &config, &index)
         }
+        Command::Session(cmd) => cmd_session(cmd, &config, &index),
     }
 }
 
@@ -510,6 +609,9 @@ fn cmd_gui(
     width: u32,
     height: u32,
     no_sandbox: bool,
+    vnc_port: Option<u16>,
+    vnc_password: Option<&str>,
+    _web: bool,
     config: &Config,
     index: &Index,
 ) -> Result<()> {
@@ -561,6 +663,11 @@ fn cmd_gui(
     eprintln!("▶ running: {}", command.join(" "));
     let mut child = cmd.spawn().with_context(|| format!("Failed to execute {program}"))?;
 
+    // Start VNC server if requested
+    if let Some(port) = vnc_port {
+        let _ = session.start_vnc(port, vnc_password);
+    }
+
     let status = match timeout {
         None => child.wait()?,
         Some(secs) => {
@@ -589,6 +696,57 @@ fn cmd_gui(
     }
 
     Ok(())
+}
+
+/// Manage persistent sessions: start, exec, stop, list.
+fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()> {
+    match cmd {
+        SessionCommand::Start { specs, command, tmpfs, zram, size } => {
+            if specs.is_empty() {
+                anyhow::bail!("At least one spec is required (e.g. 'node@20')");
+            }
+            let session_id = session::session_start(
+                &specs, &command, tmpfs, zram, size.as_deref(), config, index
+            )?;
+            println!("{session_id}");
+            Ok(())
+        }
+        SessionCommand::Exec { session_id, command } => {
+            let output = session::session_exec(&session_id, &command, config)?;
+            print!("{output}");
+            Ok(())
+        }
+        SessionCommand::Stop { session_id, purge } => {
+            let msg = session::session_stop(&session_id, purge, config)?;
+            eprintln!("{msg}");
+            Ok(())
+        }
+        SessionCommand::List { json } => {
+            let sessions = session::list_sessions(config)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&sessions)?);
+            } else {
+                if sessions.is_empty() {
+                    println!("No active sessions.");
+                    return Ok(());
+                }
+                for s in &sessions {
+                    let backing = if s.upper_is_zram {
+                        "zram"
+                    } else if s.upper_is_tmpfs {
+                        "tmpfs"
+                    } else {
+                        "disk"
+                    };
+                    let mounted = std::path::Path::new(&s.mount_point).exists();
+                    let pid_str = s.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_string());
+                    println!("  {}  specs={}  backing={backing}  mounted={mounted}  pid={pid_str}",
+                        s.session_id, s.specs.join("+"));
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {
