@@ -120,6 +120,23 @@ a client with the wrong/missing `XAUTHORITY` is refused by the X server
 the right cookie succeeds. Session cleanup (Xvfb process, socket, cookie
 file) happens on drop regardless of how the command exited.
 
+**vs. `squadron/bin/display-up`:** a lighter-weight sibling tool exists in
+`squadron` for a different shape of problem — attaching automation
+(`xdotool`/`import`, or interactd's `computer_use`/`vision_start`/
+`atspi_start`) to an app you're launching yourself rather than sandboxing
+a command *for* you. `display-up` allocates a per-agent Xvfb display
+number (flock-serialized, idempotent, keyed by agent identity) but does
+NOT provide `buckets gui`'s Xauthority-gated/bwrap-sandboxed containment
+— any process that guesses the right `:N` can still connect. Use
+`buckets gui`/`buckets site --gui` when you want the command sandboxed
+too (real OS-level containment); use `display-up` when you just need a
+private display surface to avoid colliding with another agent's session
+on the shared host `:0` (the incident that motivated it: blind `xdotool`
+automation during surfer-browser's SHELL-SPLIT-3 spammed input into
+another agent's window). The two don't conflict — `buckets gui`'s
+`XvfbSession` could reuse `display-up`'s allocation logic later if the
+two ever want to converge, but that's not needed today.
+
 ## Site buckets
 
 `buckets site <url>` runs a browser against a URL with a real, OS-enforced
