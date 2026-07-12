@@ -241,6 +241,25 @@ its source repo (`/path/to/repo-my-branch` next to `/path/to/repo`), not
 a fixed cache location — required for relative sibling path-dependencies
 (`../other-repo`) to keep resolving correctly from inside the worktree.
 
+## `--flare` — zram-backed cache instead of host disk
+
+```bash
+sudo flare-up --agent myagent --quiet   # once per session (needs root)
+buckets --flare run node@20 -- node script.js
+```
+
+`--flare` points `BUCKETS_CACHE_DIR` at an already-provisioned zram-backed
+ext4 mount (`squadron/bin/flare-up`) instead of host disk — same
+resolve/install/sandbox pipeline, just backed by compressed RAM that
+evaporates on reboot instead of accumulating on an SSD. Deliberately does
+**not** provision a session itself: `flare-up` needs root and is meant to
+be session-scoped (run once per agent/session, reused across many
+`buckets` invocations), not re-provisioned per command. `--flare` errors
+clearly if no session is live rather than silently falling back to host
+disk — run `sudo flare-up` first. See
+`/workspace/projects/FLARE_FIREFLY_DESIGN.md` for the full design and why
+this doesn't repeat the earlier zram-for-inference performance problems.
+
 ## Features borrowed from pkgx
 
 - **Bottle format**: `.tar.xz` from `dist.pkgx.dev/<platform>/<arch>/<project>/v<version>.tar.xz`

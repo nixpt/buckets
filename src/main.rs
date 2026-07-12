@@ -28,8 +28,50 @@ use index::Index;
 #[derive(Parser)]
 #[command(name = "buckets", version, about = "Throwaway runtime buckets for AI agents")]
 struct Cli {
+    /// Use a zram-backed cache dir instead of host disk — requires an
+    /// already-running `flare-up` session (see `squadron/bin/flare-up`).
+    /// This flag does NOT provision one itself: flare sessions are
+    /// deliberately session-scoped (a zram device's contents don't survive
+    /// reboot on their own, so per-command provisioning would just add
+    /// mount/unmount latency for no real ephemerality gain — see
+    /// /workspace/projects/FLARE_FIREFLY_DESIGN.md). Run `sudo flare-up`
+    /// once per session/agent, then pass `--flare` to any buckets
+    /// invocation to use it. Errors clearly if no session is live rather
+    /// than silently falling back to host disk.
+    #[arg(long, global = true)]
+    flare: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// Resolve `--flare` into a `BUCKETS_CACHE_DIR` override by asking
+/// `flare-status` (no root needed — it only reads state, doesn't
+/// provision) for the mount path of an already-live session. Errors with
+/// a pointer to `flare-up` rather than silently falling back to the
+/// host-disk default, since a caller that explicitly asked for `--flare`
+/// almost certainly doesn't want a silent downgrade.
+fn resolve_flare_cache_dir() -> Result<String> {
+    let output = std::process::Command::new("flare-status")
+        .arg("--quiet")
+        .output()
+        .context("--flare: failed to run flare-status (is squadron/bin on PATH?)")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "--flare: no live flare session — run 'sudo flare-up' first \
+             (see squadron/bin/flare-up --help)"
+        );
+    }
+
+    let mount = String::from_utf8(output.stdout)
+        .context("--flare: flare-status printed non-UTF8 output")?
+        .trim()
+        .to_string();
+    if mount.is_empty() {
+        anyhow::bail!("--flare: flare-status succeeded but printed no mount path");
+    }
+    Ok(mount)
 }
 
 #[derive(Subcommand)]
@@ -355,6 +397,15 @@ enum SessionCommand {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.flare {
+        let mount = resolve_flare_cache_dir()?;
+        eprintln!("buckets: --flare active, cache dir = {mount}");
+        // SAFETY: single-threaded at this point (no other threads spawned
+        // yet — Config::new() below is the first consumer of this env var).
+        unsafe { std::env::set_var("BUCKETS_CACHE_DIR", &mount) };
+    }
+
     let config = Config::new();
     let index = Index::builtin();
 
