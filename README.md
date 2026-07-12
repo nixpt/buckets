@@ -275,6 +275,18 @@ resolve→install→compose→exec pipeline shape.
   `/workspace/projects/CLAUDE.md`'s provisioning-lineage note for how the
   three relate.
 
+**Real-world adoption note (2026-07-11):** of the three pkgx-derived
+implementations above, `buckets` is currently the only one with real
+downstream consumers — `interactd`'s `BucketsTool` (shells out to the
+`buckets` CLI) and `flame`'s `flame-core::kindle` (a real compile-time
+Rust dependency, `buckets = { path = "../../../buckets", optional = true }`,
+one of flame's three "fuel" backends alongside local paths and language
+registries — see flame's own README: *"Buckets remains the fleet
+tool-bottle CLI; Flame is the workspace OS"*). Both `exo-hydra` copies
+remain fully built but honestly self-documented as unwired (their own
+READMEs say so) — resolve/install/manifest pipelines with no consumer
+calling into them yet.
+
 ## License
 
 MIT — see `LICENSE`. (Acknowledgments above are for design/format credit,
