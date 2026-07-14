@@ -1,9 +1,16 @@
 [package]
-name = "buckets"
+# Published as "crush-buckets" — "buckets" is already taken on crates.io by an
+# unrelated crate. The CLI binary stays named `buckets` (bin name is independent
+# of package name), so nothing about the user-facing command changes.
+name = "crush-buckets"
 version = "0.1.0"
 description = "Throwaway runtime buckets for AI agents — resolve, fetch, and run any tool in an isolated environment"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/nixpt/buckets"
+readme = "README.md"
+keywords = ["sandbox", "agent", "runtime", "bwrap", "isolation"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "buckets"
