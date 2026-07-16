@@ -132,5 +132,12 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn sanitize_project_name(name: &str) -> String {
-    name.replace(':', "-")
+    if let Some(rest) = name.strip_prefix("cargo:") {
+        format!("cargo/{}", rest)
+    } else if let Some(rest) = name.strip_prefix("path:") {
+        let relative_rest = rest.trim_start_matches('/');
+        format!("path/{}", relative_rest)
+    } else {
+        name.to_string()
+    }
 }
