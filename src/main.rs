@@ -553,7 +553,15 @@ fn cmd_run(
         let (p, a) = command.split_first().context("No command specified")?;
         (p.clone(), a.to_vec())
     } else if let Some(ref meta) = metadata {
-        let entrypoint_parts: Vec<String> = meta.entrypoint.split_whitespace().map(|s| s.to_string()).collect();
+        // Use shell-quote-aware splitting so ENTRYPOINT with quoted
+        // strings (e.g. `node -e "console.log(1)"`) preserves the
+        // quotes as part of the actual arguments rather than passing
+        // literal quote characters through to the runtime.
+        let entrypoint_parts: Vec<String> = shlex::split(&meta.entrypoint)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Failed to shell-split ENTRYPOINT in bucket metadata: '{}'",
+                meta.entrypoint
+            ))?;
         let (ep_program, ep_args) = entrypoint_parts.split_first()
             .context("Empty entrypoint in local bucket metadata")?;
         (ep_program.clone(), ep_args.to_vec())
