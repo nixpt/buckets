@@ -203,6 +203,7 @@ pub fn build_bucketfile(
                     extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
                     extra_rw_binds: vec![target_dir.clone()],
                     allow_network: true,
+                    net_ns: None,
                 };
                 
                 // Execute command inside sandbox

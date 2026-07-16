@@ -341,6 +341,7 @@ pub fn session_start(
             extra_ro_binds,
             extra_rw_binds: Vec::new(),
             allow_network: false,
+            net_ns: None,
         };
 
         let mut child = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);
@@ -441,6 +442,7 @@ pub fn session_exec(
         extra_ro_binds,
         extra_rw_binds: Vec::new(),
         allow_network: false,
+        net_ns: None,
     };
 
     let mut cmd = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);

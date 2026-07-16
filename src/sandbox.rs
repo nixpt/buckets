@@ -36,6 +36,12 @@ pub struct SandboxProfile {
     /// Build commands generally need their package registry (crates.io,
     /// npm, ...); plain `run`/`shell` default to no network.
     pub allow_network: bool,
+    /// If set, join this named buck-net namespace instead of unsharing or
+    /// sharing the host network. Value is a path like `/proc/{pid}/ns/net`.
+    /// Takes precedence over `allow_network` for namespace routing — the
+    /// bucket gets whatever the namespace has (loopback only by default;
+    /// NAT if the namespace was configured for it).
+    pub net_ns: Option<String>,
 }
 
 /// Base host directories bound read-only into every sandbox — enough for
@@ -156,7 +162,14 @@ fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
     a.push("--tmpfs".into());
     a.push("/tmp".into());
     a.push("--unshare-pid".into());
-    if !profile.allow_network {
+    // Network: three modes in priority order —
+    //   1. buck-net namespace (--netns): join an isolated virtual net
+    //   2. unshare (--unshare-net): completely cut off
+    //   3. host network (neither flag): full access for build toolchains
+    if let Some(ref ns_path) = profile.net_ns {
+        a.push("--netns".into());
+        a.push(ns_path.clone());
+    } else if !profile.allow_network {
         a.push("--unshare-net".into());
     }
 

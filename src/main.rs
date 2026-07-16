@@ -22,6 +22,7 @@ mod site;
 mod types;
 mod worktree;
 mod bucketfile;
+mod net;
 
 use config::Config;
 use index::Index;
@@ -87,6 +88,12 @@ enum Command {
         /// Command and arguments to run
         #[arg(last = true)]
         command: Vec<String>,
+
+        /// Join a named buck-net virtual network instead of the default
+        /// isolated (--unshare-net) mode. Multiple buckets on the same net
+        /// can reach each other over loopback (127.0.0.1).
+        #[arg(long)]
+        net: Option<String>,
 
         /// Run unsandboxed (plain subprocess, no bwrap containment).
         #[arg(long)]
@@ -290,7 +297,68 @@ enum Command {
     /// zram (--zram).
     #[command(subcommand)]
     Session(SessionCommand),
+
+    /// Isolated virtual networks for buckets — create private networks,
+    /// run buckets inside them, and forward ports to the host.
+    ///
+    /// Usage:
+    ///   buckets net create dev-net
+    ///   buckets net run dev-net node@20 -- node server.js
+    ///   buckets net expose dev-net 8080:3000
+    ///   buckets net ls
+    ///   buckets net rm dev-net
+    ///
+    /// Multiple buckets in the same net share an isolated loopback — they
+    /// can talk to each other at 127.0.0.1 without any host network access.
+    #[command(subcommand)]
+    Net(NetSubcommand),
 }
+
+#[derive(Subcommand)]
+enum NetSubcommand {
+    /// Create a named virtual network (persists until 'buckets net rm').
+    Create {
+        /// Name for the network (e.g. dev-net, api-net).
+        name: String,
+    },
+
+    /// Remove a named virtual network and kill its keeper process.
+    Rm {
+        /// Name of the network to remove.
+        name: String,
+    },
+
+    /// List all active virtual networks.
+    Ls,
+
+    /// Run a bucket inside a named virtual network.
+    ///
+    /// Equivalent to 'buckets run --net <name> <spec> -- <cmd>'.
+    Run {
+        /// Name of the buck-net to join.
+        name: String,
+        /// Runtime spec(s) (e.g. node@20 python@3.11).
+        specs: Vec<String>,
+        /// Command and arguments to run.
+        #[arg(last = true)]
+        command: Vec<String>,
+        /// Run unsandboxed.
+        #[arg(long)]
+        no_sandbox: bool,
+    },
+
+    /// Forward a port from the host loopback into the virtual network.
+    ///
+    /// Usage: buckets net expose dev-net 8080:3000
+    /// (forwards 127.0.0.1:8080 on the host → 127.0.0.1:3000 inside the net)
+    Expose {
+        /// Name of the buck-net to expose into.
+        name: String,
+        /// Port mapping: host_port:bucket_port (e.g. 8080:3000).
+        mapping: String,
+    },
+}
+
 
 #[derive(Subcommand)]
 enum WorktreeCommand {
@@ -419,7 +487,16 @@ fn main() -> Result<()> {
     let index = Index::builtin();
 
     match cli.command {
-        Command::Run { specs, command, no_sandbox } => cmd_run(&specs, &command, no_sandbox, &config, &index),
+        Command::Run { specs, command, no_sandbox, net } => {
+            let nets_dir = config.cache_dir.join("nets");
+            let net_ns = if let Some(ref name) = net {
+                let session = net::NetSession::load(name, &nets_dir)?;
+                Some(session.ns_path())
+            } else {
+                None
+            };
+            cmd_run(&specs, &command, no_sandbox, net_ns, &config, &index)
+        }
         Command::Shell { specs, shell, no_sandbox } => cmd_shell(&specs, shell.as_deref(), no_sandbox, &config, &index),
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
         Command::Info { specs } => cmd_info(&specs, &config, &index),
@@ -435,12 +512,18 @@ fn main() -> Result<()> {
             cmd_site(&url, browser_bin.as_deref(), &extra_args, gui, incognito, width, height, screenshot.as_deref(), timeout, no_network, no_sandbox, &config)
         }
         Command::Session(cmd) => cmd_session(cmd, &config, &index),
+        Command::Net(cmd) => cmd_net(cmd, &config),
     }
 }
 
-/// Run a command with the resolved runtime environment, sandboxed via
-/// `bwrap` unless `no_sandbox` is set (see `sandbox.rs`).
-fn cmd_run(specs: &[String], command: &[String], no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
+fn cmd_run(
+    specs: &[String],
+    command: &[String],
+    no_sandbox: bool,
+    net_ns: Option<String>,
+    config: &Config,
+    index: &Index,
+) -> Result<()> {
     if specs.is_empty() {
         anyhow::bail!("At least one spec is required (e.g. 'node@20')");
     }
@@ -508,6 +591,7 @@ fn cmd_run(specs: &[String], command: &[String], no_sandbox: bool, config: &Conf
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
             extra_rw_binds: Vec::new(),
             allow_network: false,
+            net_ns: net_ns.clone(),
         };
         sandbox::sandboxed_command(program, args, &cwd, &final_env, &profile)
     };
@@ -523,7 +607,11 @@ fn cmd_run(specs: &[String], command: &[String], no_sandbox: bool, config: &Conf
     cmd.stderr(std::process::Stdio::inherit());
 
     let bucket_name = specs.join("+");
-    eprintln!("▶ running in {bucket_name} bucket");
+    if let Some(ref ns) = net_ns {
+        eprintln!("▶ running in {bucket_name} bucket [buck-net {ns}]");
+    } else {
+        eprintln!("▶ running in {bucket_name} bucket");
+    }
     let status = cmd.status().with_context(|| format!("Failed to execute {program}"))?;
 
     if !status.success() {
@@ -532,6 +620,74 @@ fn cmd_run(specs: &[String], command: &[String], no_sandbox: bool, config: &Conf
 
     Ok(())
 }
+
+/// Manage buck-net virtual networks.
+fn cmd_net(cmd: NetSubcommand, config: &Config) -> Result<()> {
+    let nets_dir = config.cache_dir.join("nets");
+
+    match cmd {
+        NetSubcommand::Create { name } => {
+            net::NetSession::create(&name, &nets_dir)?;
+            Ok(())
+        }
+
+        NetSubcommand::Rm { name } => {
+            let session = net::NetSession::load(&name, &nets_dir)?;
+            session.destroy()
+        }
+
+        NetSubcommand::Ls => {
+            let sessions = net::NetSession::list_all(&nets_dir);
+            if sessions.is_empty() {
+                println!("No active buck-nets.");
+                println!("  Create one with: buckets net create <name>");
+            } else {
+                println!("{:<20} {:<10} NAMESPACE", "NAME", "KEEPER PID");
+                println!("{}", "─".repeat(60));
+                for info in sessions {
+                    println!(
+                        "{:<20} {:<10} /proc/{}/ns/net",
+                        info.name, info.keeper_pid, info.keeper_pid
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        NetSubcommand::Run { name, specs, command, no_sandbox } => {
+            let session = net::NetSession::load(&name, &nets_dir)?;
+            let net_ns = if no_sandbox { None } else { Some(session.ns_path()) };
+            // Re-use cmd_run; we need a fake Index so pull it here
+            let index = crate::index::Index::builtin();
+            cmd_run(&specs, &command, no_sandbox, net_ns, config, &index)
+        }
+
+        NetSubcommand::Expose { name, mapping } => {
+            let session = net::NetSession::load(&name, &nets_dir)?;
+            let (host_port, bucket_port) = parse_port_mapping(&mapping)?;
+            let mut child = session.expose_port(host_port, bucket_port)?;
+            eprintln!("  (press Ctrl-C to stop forwarding)");
+            child.wait().context("socat port-forward process failed")?;
+            Ok(())
+        }
+    }
+}
+
+/// Parse a "host_port:bucket_port" port mapping string.
+fn parse_port_mapping(s: &str) -> Result<(u16, u16)> {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid port mapping '{s}': expected host_port:bucket_port (e.g. 8080:3000)");
+    }
+    let host_port: u16 = parts[0]
+        .parse()
+        .with_context(|| format!("Invalid host port '{}'", parts[0]))?;
+    let bucket_port: u16 = parts[1]
+        .parse()
+        .with_context(|| format!("Invalid bucket port '{}'", parts[1]))?;
+    Ok((host_port, bucket_port))
+}
+
 
 /// Open an interactive shell with the runtime in PATH, sandboxed via
 /// `bwrap` unless `no_sandbox` is set (see `sandbox.rs`).
@@ -563,6 +719,7 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &C
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
             extra_rw_binds: Vec::new(),
             allow_network: false,
+            net_ns: None,
         };
         sandbox::sandboxed_command(&shell_program, &[], &cwd, &resolved.env, &profile)
     };
@@ -780,6 +937,7 @@ fn run_project_step(
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
             extra_rw_binds: Vec::new(),
             allow_network: true,
+            net_ns: None,
         };
         sandbox::sandboxed_command(program, args, project_dir, &resolved.env, &profile)
     };
@@ -852,6 +1010,7 @@ fn cmd_gui(
             extra_ro_binds,
             extra_rw_binds: Vec::new(),
             allow_network: false,
+            net_ns: None,
         };
         sandbox::sandboxed_command(program, args, &cwd, &env, &profile)
     };
@@ -969,6 +1128,7 @@ fn cmd_site(
             extra_ro_binds,
             extra_rw_binds: Vec::new(),
             allow_network: !no_network,
+            net_ns: None,
         };
         let args_rest = &args[..];
         sandbox::sandboxed_command(browser_path.to_string_lossy().as_ref(), args_rest, &target.storage_dir, &env, &profile)

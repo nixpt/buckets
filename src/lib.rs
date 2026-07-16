@@ -34,6 +34,7 @@ pub mod site;
 pub mod types;
 pub mod worktree;
 pub mod bucketfile;
+pub mod net;
 
 pub use config::Config;
 pub use index::Index;
