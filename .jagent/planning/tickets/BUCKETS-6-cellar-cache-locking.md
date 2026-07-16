@@ -4,7 +4,7 @@
 |-------|-------|
 | **ID** | BUCKETS-6 |
 | **Priority** | P2 |
-| **Status** | In Progress |
+| **Status** | Done |
 | **Phase** | M4 |
 | **Assignee** | antigravity |
 | **Dependencies** | none |
@@ -16,10 +16,10 @@ Multiple concurrent fleet agents executing `buckets run` or `buckets build` can 
 
 ## Success criteria
 
-- [ ] Create and acquire an exclusive advisory file lock (e.g., using `fd-lock`) on a package-specific lock file (e.g., `<project_dir>/.install.lock`) during the installation phase.
-- [ ] Safely block and wait for the lock to be released if another process is currently installing the package.
-- [ ] Ensure that once the lock is acquired, we perform a final "already installed" check to avoid re-installing if the other process just finished the installation.
-- [ ] Ensure that locks are safely released via RAII guard even in the event of panic or crash.
+- [x] Create and acquire an exclusive advisory file lock (e.g., using `fd-lock`) on a package-specific lock file (e.g., `<project_dir>/.install.lock`) during the installation phase.
+- [x] Safely block and wait for the lock to be released if another process is currently installing the package.
+- [x] Ensure that once the lock is acquired, we perform a final "already installed" check to avoid re-installing if the other process just finished the installation.
+- [x] Ensure that locks are safely released via RAII guard even in the event of panic or crash.
 
 ## Technical approach
 
