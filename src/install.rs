@@ -3,7 +3,7 @@
 //! rename it into the cache (crash-safe — a killed download never leaves a
 //! half-extracted directory `is_installed` would mistake for complete).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::fs;
 
@@ -11,11 +11,47 @@ use crate::cellar;
 use crate::config::Config;
 use crate::types::{dist_version_string, Installation, Package};
 
+fn install_cargo(config: &Config, pkg: &Package) -> Result<Installation> {
+    let version_str = dist_version_string(&pkg.version);
+    let target_dir = config.version_dir(&pkg.project, &version_str);
+    let crate_name = pkg.project.strip_prefix("cargo:")
+        .context("Missing cargo: prefix")?;
+
+    eprintln!("↓ compiling cargo package {crate_name} v{version_str}...");
+
+    let status = std::process::Command::new("cargo")
+        .arg("install")
+        .arg(crate_name)
+        .arg("--version")
+        .arg(&version_str)
+        .arg("--root")
+        .arg(&target_dir)
+        .status()
+        .context("Failed to run 'cargo install'. Is cargo installed on the host?")?;
+
+    if !status.success() {
+        bail!("'cargo install' failed for {crate_name} v{version_str}");
+    }
+
+    // Create version symlinks (v*, v<major>, v<major.minor>)
+    cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
+
+    eprintln!("✓ cached cargo package {} v{}", pkg.project, version_str);
+
+    Ok(Installation {
+        pkg: pkg.clone(),
+        path: target_dir,
+    })
+}
+
 /// Install a package: download, extract, and cache it.
 ///
 /// Returns the `Installation` pointing to the cached directory.
 /// Uses a temp dir + atomic rename pattern for crash safety.
 pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
+    if pkg.project.starts_with("cargo:") {
+        return install_cargo(config, pkg);
+    }
     let version_str = dist_version_string(&pkg.version);
     let project_dir = config.project_dir(&pkg.project);
     let target_dir = config.version_dir(&pkg.project, &version_str);
