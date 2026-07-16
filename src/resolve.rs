@@ -185,10 +185,25 @@ fn resolve_version(config: &Config, project: &str, constraint: &semver::VersionR
     // 3. Find best remote match
     match inventory::best_match(config, project, constraint)? {
         Some(v) => Ok(v),
-        None => bail!(
-            "No version of '{}' matches constraint '{}' on dist server ({})",
-            project, constraint, config.dist_url
-        ),
+        None => {
+            let available = match inventory::list_remote_versions(config, project) {
+                Ok(list) => {
+                    let mut strs: Vec<String> = list.iter().map(|v| v.to_string()).collect();
+                    strs.truncate(10);
+                    if strs.is_empty() {
+                        "none".to_string()
+                    } else {
+                        strs.join(", ")
+                    }
+                }
+                Err(_) => "unknown".to_string(),
+            };
+            bail!(
+                "No version of '{}' matches constraint '{}' on dist server.\n\
+                 Available versions: {}",
+                project, constraint, available
+            )
+        }
     }
 }
 
@@ -280,5 +295,15 @@ mod tests {
         let reqs = collect_transitive_reqs(&["python".to_string()], &index).unwrap();
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].project, "python.org");
+    }
+
+    #[test]
+    fn test_resolve_version_constraint_mismatch() {
+        let config = Config::default();
+        let req = semver::VersionReq::parse("^99.0").unwrap();
+        let err = resolve_version(&config, "python.org", &req).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("No version of 'python.org' matches constraint '^99.0'"));
+        assert!(msg.contains("Available versions:"));
     }
 }

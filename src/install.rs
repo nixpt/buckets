@@ -222,6 +222,30 @@ fn install_cargo(config: &Config, pkg: &Package) -> Result<Installation> {
     })
 }
 
+fn map_download_ureq_error(err: ureq::Error, url: &str, project: &str) -> anyhow::Error {
+    match err {
+        ureq::Error::Status(404, _) => {
+            anyhow::anyhow!(
+                "Bottle for package '{}' not found (HTTP 404 at {})",
+                project, url
+            )
+        }
+        ureq::Error::Status(code, _) => {
+            anyhow::anyhow!(
+                "Failed to download bottle for package '{}' (HTTP {} at {})",
+                project, code, url
+            )
+        }
+        ureq::Error::Transport(transport) => {
+            anyhow::anyhow!(
+                "Network connection failed while downloading bottle for package '{}' (Error: {:?})\n\
+                 Please check your internet connection.",
+                project, transport.kind()
+            )
+        }
+    }
+}
+
 /// Install a package: download, extract, and cache it.
 ///
 /// Returns the `Installation` pointing to the cached directory.
@@ -279,9 +303,10 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     let url = config.bottle_url(&pkg.project, &version_str);
     eprintln!("↓ fetching {url}");
 
-    let response = ureq::get(&url)
-        .call()
-        .with_context(|| format!("Failed to download bottle from {url}"))?;
+    let response = match ureq::get(&url).call() {
+        Ok(res) => res,
+        Err(e) => return Err(map_download_ureq_error(e, &url, &pkg.project)),
+    };
 
     // Stream decompression: XZ → tar → extract to temp dir
     let tempdir = tempfile::tempdir_in(&project_dir)

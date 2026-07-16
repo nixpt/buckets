@@ -47,10 +47,13 @@ fn list_cargo_versions(project: &str) -> Result<Vec<Version>> {
         .context("Missing cargo: prefix")?;
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
     
-    let response = ureq::get(&url)
+    let response = match ureq::get(&url)
         .set("User-Agent", "crush-buckets/0.1.0 (contact@nixpt.dev)")
         .call()
-        .with_context(|| format!("Failed to fetch cargo versions from {url}"))?;
+    {
+        Ok(res) => res,
+        Err(e) => return Err(map_cargo_ureq_error(e, &url, crate_name)),
+    };
         
     let data: CargoCrateResponse = serde_json::from_reader(response.into_reader())
         .with_context(|| format!("Failed to parse crates.io response for {crate_name}"))?;
@@ -86,9 +89,10 @@ pub fn list_remote_versions(config: &Config, project: &str) -> Result<Vec<Versio
         return list_cargo_versions(project);
     }
     let url = config.versions_url(project);
-    let response = ureq::get(&url)
-        .call()
-        .with_context(|| format!("Failed to fetch versions from {url}"))?;
+    let response = match ureq::get(&url).call() {
+        Ok(res) => res,
+        Err(e) => return Err(map_ureq_error(e, &url, project)),
+    };
 
     let reader = response.into_reader();
     let mut versions = Vec::new();
@@ -133,6 +137,54 @@ pub fn best_match(config: &Config, project: &str, constraint: &VersionReq) -> Re
 pub fn latest_version(config: &Config, project: &str) -> Result<Option<Version>> {
     let versions = list_remote_versions(config, project)?;
     Ok(versions.into_iter().find(|v| v.pre.is_empty()))
+}
+
+fn map_ureq_error(err: ureq::Error, url: &str, project: &str) -> anyhow::Error {
+    match err {
+        ureq::Error::Status(404, _) => {
+            anyhow::anyhow!(
+                "Package '{}' not found in the index (HTTP 404 at {})",
+                project, url
+            )
+        }
+        ureq::Error::Status(code, _) => {
+            anyhow::anyhow!(
+                "Failed to fetch versions for package '{}' (HTTP {} at {})",
+                project, code, url
+            )
+        }
+        ureq::Error::Transport(transport) => {
+            anyhow::anyhow!(
+                "Network connection failed while fetching package '{}' (Error: {:?})\n\
+                 Please check your internet connection or BUCKETS_DIST_URL.",
+                project, transport.kind()
+            )
+        }
+    }
+}
+
+fn map_cargo_ureq_error(err: ureq::Error, url: &str, crate_name: &str) -> anyhow::Error {
+    match err {
+        ureq::Error::Status(404, _) => {
+            anyhow::anyhow!(
+                "Cargo crate '{}' not found on crates.io (HTTP 404 at {})",
+                crate_name, url
+            )
+        }
+        ureq::Error::Status(code, _) => {
+            anyhow::anyhow!(
+                "Failed to fetch crate '{}' from crates.io (HTTP {} at {})",
+                crate_name, code, url
+            )
+        }
+        ureq::Error::Transport(transport) => {
+            anyhow::anyhow!(
+                "Network connection failed while fetching cargo crate '{}' (Error: {:?})\n\
+                 Please check your internet connection.",
+                crate_name, transport.kind()
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -191,5 +243,19 @@ mod tests {
         assert!(!versions.is_empty());
         let has_v0_1_0 = versions.iter().any(|v| v.major == 0 && v.minor == 1);
         assert!(has_v0_1_0);
+    }
+
+    #[test]
+    fn test_map_ureq_error_dns() {
+        let err = ureq::get("http://this-does-not-exist.invalid/").call().unwrap_err();
+        let mapped = map_ureq_error(err, "http://this-does-not-exist.invalid/", "test-pkg");
+        assert!(mapped.to_string().contains("Network connection failed"));
+    }
+
+    #[test]
+    fn test_map_ureq_error_404() {
+        let err = ureq::get("https://dist.pkgx.dev/nonexistent-package/versions.txt").call().unwrap_err();
+        let mapped = map_ureq_error(err, "https://dist.pkgx.dev/nonexistent-package/versions.txt", "nonexistent-package");
+        assert!(mapped.to_string().contains("Package 'nonexistent-package' not found"));
     }
 }

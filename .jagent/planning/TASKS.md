@@ -38,4 +38,4 @@ Bridge the distribution gap for Rust-based tools by downloading and building the
 Ensure concurrent performance and resource sharing for parallel fleet agents.
 
 - [x] **BUCKETS-6** (M): **Cellar Cache Locking** — Optimize multi-agent write locks to prevent corrupted/concurrent extractions in the shared cache.
-- [ ] **BUCKETS-7** (S): **CLI Diagnostic Cleanups** — Polish error outputs when remote connections fail or index versions are not found.
+- [x] **BUCKETS-7** (S): **CLI Diagnostic Cleanups** — Polish error outputs when remote connections fail or index versions are not found.

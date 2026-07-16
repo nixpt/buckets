@@ -1,8 +1,8 @@
 # Planning state — buckets
 
-**Updated:** 2026-07-16T15:18:00-05:00
-**Milestone focus:** M3 — Cargo Spec Resolution (see ROADMAP.md, TASKS.md)
-**Branch:** `agent/antigravity/BUCKETS-5`
+**Updated:** 2026-07-16T15:28:00-05:00
+**Milestone focus:** M4 — Fleet Concurrency & Optimization (see ROADMAP.md, TASKS.md)
+**Branch:** `agent/antigravity/BUCKETS-7`
 
 ## Delivery snapshot
 
@@ -39,7 +39,7 @@ _None known._
 | Metric | Value |
 |--------|--------|
 | Total crates | 1 (Standalone binary + library) |
-| Tests passed | **168** (82 lib tests + 86 binary tests) |
+| Tests passed | **174** (85 lib tests + 89 binary tests) |
 | Tests failed | 0 |
 | Tests ignored | 0 |
 | Warnings | 0 |
@@ -54,7 +54,6 @@ _None known._
 ## Next 3 (from TASKS.md, priority order)
 
 1. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
-2. **CLI Diagnostic Cleanups**: Polish error outputs when remote connections fail or index versions are not found (BUCKETS-7).
 
 ---
 
