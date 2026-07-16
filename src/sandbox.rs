@@ -31,6 +31,8 @@ pub struct SandboxProfile {
     /// [`crate::types::Installation`]'s path, so the toolchain itself is
     /// visible without being writable from inside the sandbox.
     pub extra_ro_binds: Vec<PathBuf>,
+    /// Additional read-write binds for building/caching.
+    pub extra_rw_binds: Vec<PathBuf>,
     /// Build commands generally need their package registry (crates.io,
     /// npm, ...); plain `run`/`shell` default to no network.
     pub allow_network: bool,
@@ -172,6 +174,13 @@ fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
         a.push(s);
     }
 
+    for bind in &profile.extra_rw_binds {
+        let s = bind.to_string_lossy().to_string();
+        a.push("--bind".into());
+        a.push(s.clone());
+        a.push(s);
+    }
+
     a.push("--chdir".into());
     a.push(cwd.to_string_lossy().to_string());
 
@@ -191,6 +200,12 @@ fn build_proot_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
 
     if let Some(dir) = &profile.project_dir {
         let s = dir.to_string_lossy().to_string();
+        a.push("-b".into());
+        a.push(format!("{}:{}", s, s));
+    }
+
+    for bind in &profile.extra_rw_binds {
+        let s = bind.to_string_lossy().to_string();
         a.push("-b".into());
         a.push(format!("{}:{}", s, s));
     }

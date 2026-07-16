@@ -21,6 +21,7 @@ mod session;
 mod site;
 mod types;
 mod worktree;
+mod bucketfile;
 
 use config::Config;
 use index::Index;
@@ -84,7 +85,7 @@ enum Command {
         specs: Vec<String>,
 
         /// Command and arguments to run
-        #[arg(last = true, required = true)]
+        #[arg(last = true)]
         command: Vec<String>,
 
         /// Run unsandboxed (plain subprocess, no bwrap containment).
@@ -141,6 +142,14 @@ enum Command {
     Build {
         /// Git URL or local path.
         path_or_url: String,
+
+        /// Path to Bucketfile. If provided, builds a Bucketfile spec instead of a standard source directory.
+        #[arg(short = 'f', long)]
+        bucketfile: Option<String>,
+
+        /// Name/tag for the built local bucket (required when building a Bucketfile).
+        #[arg(short = 't', long)]
+        tag: Option<String>,
 
         /// Also run the detected test command after a successful build.
         #[arg(long)]
@@ -415,8 +424,8 @@ fn main() -> Result<()> {
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
         Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
-        Command::Build { path_or_url, test, run, no_sandbox } => {
-            cmd_build(&path_or_url, test, run, no_sandbox, &config, &index)
+        Command::Build { path_or_url, bucketfile, tag, test, run, no_sandbox } => {
+            cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, &config, &index)
         }
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
         Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password, web } => {
@@ -439,28 +448,72 @@ fn cmd_run(specs: &[String], command: &[String], no_sandbox: bool, config: &Conf
     let resolved = resolve::resolve_multi(specs, config, index)
         .with_context(|| format!("Failed to resolve specs: {}", specs.join(", ")))?;
 
-    let (program, args) = command.split_first().context("No command specified")?;
+    let mut metadata: Option<crate::bucketfile::BucketMetadata> = None;
+    let mut bucket_workspace_path = None;
+
+    for inst in &resolved.installations {
+        if inst.pkg.project.starts_with("local/") {
+            let meta_path = inst.path.join("metadata.json");
+            if meta_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&meta_path) {
+                    if let Ok(meta) = serde_json::from_str::<crate::bucketfile::BucketMetadata>(&content) {
+                        bucket_workspace_path = Some(inst.path.join("workspace"));
+                        metadata = Some(meta);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let (program_str, args_vec) = if !command.is_empty() {
+        let (p, a) = command.split_first().context("No command specified")?;
+        (p.clone(), a.to_vec())
+    } else if let Some(ref meta) = metadata {
+        let entrypoint_parts: Vec<String> = meta.entrypoint.split_whitespace().map(|s| s.to_string()).collect();
+        let (ep_program, ep_args) = entrypoint_parts.split_first()
+            .context("Empty entrypoint in local bucket metadata")?;
+        (ep_program.clone(), ep_args.to_vec())
+    } else {
+        anyhow::bail!("No command specified. Use 'buckets run <spec> -- <command>' or 'buckets shell <spec>'");
+    };
+
+    let program = &program_str;
+    let args = &args_vec;
+
+    let mut final_env = resolved.env.clone();
+    if let Some(ref meta) = metadata {
+        for (k, v) in &meta.env {
+            final_env.insert(k.clone(), v.clone());
+        }
+    }
 
     let mut cmd = if no_sandbox {
         let mut c = std::process::Command::new(program);
         c.args(args);
         c
     } else {
-        let cwd = std::env::current_dir()?;
+        let cwd = if let Some(ref meta) = metadata {
+            let base_ws = bucket_workspace_path.clone().unwrap();
+            if let Some(ref wd) = meta.workdir {
+                base_ws.join(wd)
+            } else {
+                base_ws
+            }
+        } else {
+            std::env::current_dir()?
+        };
         let profile = sandbox::SandboxProfile {
-            // The invocation cwd must be rw-bound: `--chdir` needs it to
-            // exist inside bwrap's fresh mount namespace, and the common
-            // case (`buckets run node@20 -- node script.js`) reads/writes
-            // files right there.
             project_dir: Some(cwd.clone()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            extra_rw_binds: Vec::new(),
             allow_network: false,
         };
-        sandbox::sandboxed_command(program, args, &cwd, &resolved.env, &profile)
+        sandbox::sandboxed_command(program, args, &cwd, &final_env, &profile)
     };
 
     if no_sandbox {
-        for (key, value) in &resolved.env {
+        for (key, value) in &final_env {
             cmd.env(key, value);
         }
     }
@@ -508,6 +561,7 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &C
         let profile = sandbox::SandboxProfile {
             project_dir: Some(cwd.clone()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            extra_rw_binds: Vec::new(),
             allow_network: false,
         };
         sandbox::sandboxed_command(&shell_program, &[], &cwd, &resolved.env, &profile)
@@ -621,8 +675,39 @@ fn cmd_list(config: &Config) -> Result<()> {
 
 /// Clone/use a source repo, detect its build system, resolve the toolchain
 /// it needs, and run build (+ optionally test, run) sandboxed against it.
-fn cmd_build(path_or_url: &str, test: bool, run: bool, no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
+fn cmd_build(
+    path_or_url: &str,
+    bucketfile: Option<&str>,
+    tag: Option<&str>,
+    test: bool,
+    run: bool,
+    no_sandbox: bool,
+    config: &Config,
+    index: &Index,
+) -> Result<()> {
     let (source_dir, is_temp) = project::resolve_source(path_or_url)?;
+
+    // Check if we should build a Bucketfile
+    let bucketfile_path = if let Some(bf) = bucketfile {
+        Some(std::path::PathBuf::from(bf))
+    } else {
+        let default_bf = source_dir.join("Bucketfile");
+        if default_bf.exists() {
+            Some(default_bf)
+        } else {
+            None
+        }
+    };
+
+    if let Some(bf_path) = bucketfile_path {
+        let tag_name = tag.ok_or_else(|| {
+            anyhow::anyhow!("Please specify a name/tag for the built bucket using --tag or -t (e.g. -t my-bucket)")
+        })?;
+
+        crate::bucketfile::build_bucketfile(config, &bf_path, tag_name)?;
+        return Ok(());
+    }
+
     let mut plan = project::detect(&source_dir)
         .with_context(|| format!("Failed to detect a build system in {}", source_dir.display()))?;
     plan.is_temp = is_temp;
@@ -693,6 +778,7 @@ fn run_project_step(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(project_dir.to_path_buf()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            extra_rw_binds: Vec::new(),
             allow_network: true,
         };
         sandbox::sandboxed_command(program, args, project_dir, &resolved.env, &profile)
@@ -764,6 +850,7 @@ fn cmd_gui(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
+            extra_rw_binds: Vec::new(),
             allow_network: false,
         };
         sandbox::sandboxed_command(program, args, &cwd, &env, &profile)
@@ -880,6 +967,7 @@ fn cmd_site(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(target.storage_dir.clone()),
             extra_ro_binds,
+            extra_rw_binds: Vec::new(),
             allow_network: !no_network,
         };
         let args_rest = &args[..];

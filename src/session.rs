@@ -339,6 +339,7 @@ pub fn session_start(
         let profile = SandboxProfile {
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
+            extra_rw_binds: Vec::new(),
             allow_network: false,
         };
 
@@ -438,6 +439,7 @@ pub fn session_exec(
     let profile = SandboxProfile {
         project_dir: Some(cwd.clone()),
         extra_ro_binds,
+        extra_rw_binds: Vec::new(),
         allow_network: false,
     };
 

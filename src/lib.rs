@@ -33,6 +33,7 @@ pub mod sandbox;
 pub mod site;
 pub mod types;
 pub mod worktree;
+pub mod bucketfile;
 
 pub use config::Config;
 pub use index::Index;
