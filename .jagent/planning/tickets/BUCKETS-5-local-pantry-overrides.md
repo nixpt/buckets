@@ -4,7 +4,7 @@
 |-------|-------|
 | **ID** | BUCKETS-5 |
 | **Priority** | P1 |
-| **Status** | In Progress |
+| **Status** | Done |
 | **Phase** | M3 |
 | **Assignee** | antigravity |
 | **Dependencies** | none |
@@ -16,18 +16,18 @@ Currently, `buckets` only resolves packages using the built-in index aliases or 
 
 ## Success criteria
 
-- [ ] Support loading overrides from a `pantry.toml` configuration file.
-- [ ] Load `pantry.toml` from the current directory (local workspace) or `~/.config/buckets/pantry.toml` (global user configuration).
-- [ ] Let `pantry.toml` define overrides:
+- [x] Support loading overrides from a `pantry.toml` configuration file.
+- [x] Load `pantry.toml` from the current directory (local workspace) or `~/.config/buckets/pantry.toml` (global user configuration).
+- [x] Let `pantry.toml` define overrides:
   ```toml
   [overrides."nodejs.org"]
   path = "/workspace/projects/node"
   version = "20.99.0"  # Optional, default: 0.0.0
   provides = ["node", "npm"]  # Optional
   ```
-- [ ] Intercept version resolution in `inventory.rs`: if the package name has a pantry override, immediately return its declared version (bypassing the network).
-- [ ] Implement `install_pantry_override` in `install.rs` (sharing core logic with local path building) to compile the overridden local package and cache it.
-- [ ] Verify that running `buckets run node` uses the overridden local node installation path when the override is active.
+- [x] Intercept version resolution in `inventory.rs`: if the package name has a pantry override, immediately return its declared version (bypassing the network).
+- [x] Implement `install_pantry_override` in `install.rs` (sharing core logic with local path building) to compile the overridden local package and cache it.
+- [x] Verify that running `buckets run node` uses the overridden local node installation path when the override is active.
 
 ## Technical approach
 
