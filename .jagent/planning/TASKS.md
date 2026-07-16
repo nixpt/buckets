@@ -29,7 +29,7 @@ Bridge the distribution gap for Rust-based tools by downloading and building the
 
 - [x] **BUCKETS-4** (L): **Cargo Spec Type Engine** — Implement parsing, version resolving, fetching, building, and caching cargo packages (e.g. `buckets run cargo:crush-ast@0.2.0`).
 - [x] **BUCKETS-8** (M): **Local Path Spec Support** — Support running local project source code directly in buckets via a `path:` spec prefix (e.g. `path:.`).
-- [ ] **BUCKETS-5** (M): **Local Pantry Overrides** — Create configuration to override package distributions with local directories or custom manifests.
+- [x] **BUCKETS-5** (M): **Local Pantry Overrides** — Create configuration to override package distributions with local directories or custom manifests.
 
 ---
 
@@ -38,4 +38,4 @@ Bridge the distribution gap for Rust-based tools by downloading and building the
 Ensure concurrent performance and resource sharing for parallel fleet agents.
 
 - [x] **BUCKETS-6** (M): **Cellar Cache Locking** — Optimize multi-agent write locks to prevent corrupted/concurrent extractions in the shared cache.
-- [ ] **BUCKETS-7** (S): **CLI Diagnostic Cleanups** — Polish error outputs when remote connections fail or index versions are not found.
+- [x] **BUCKETS-7** (S): **CLI Diagnostic Cleanups** — Polish error outputs when remote connections fail or index versions are not found.

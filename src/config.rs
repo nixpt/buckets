@@ -5,6 +5,7 @@
 //! them hardcode paths or URLs directly.
 
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 /// Configuration for buckets.
 #[derive(Debug, Clone)]
@@ -26,6 +27,20 @@ pub struct Config {
     pub worktree_dir: Option<PathBuf>,
     /// Platform string (e.g. "linux/x86_64").
     pub platform: String,
+    /// Local pantry overrides mapping project names to custom directories/versions.
+    pub pantry_overrides: HashMap<String, PantryOverride>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PantryOverride {
+    pub path: String,
+    pub version: Option<String>,
+    pub provides: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PantryToml {
+    pub overrides: Option<HashMap<String, PantryOverride>>,
 }
 
 impl Config {
@@ -53,11 +68,14 @@ impl Config {
 
         let platform = crate::types::platform_prefix();
 
+        let pantry_overrides = load_pantry_overrides();
+
         Self {
             dist_url,
             cache_dir,
             worktree_dir,
             platform,
+            pantry_overrides,
         }
     }
 
@@ -141,3 +159,68 @@ fn sanitize_project_name(name: &str) -> String {
         name.to_string()
     }
 }
+
+fn load_pantry_overrides() -> HashMap<String, PantryOverride> {
+    let mut overrides = HashMap::new();
+
+    // 1. Load user global config: ~/.config/buckets/pantry.toml
+    if let Some(home) = home_dir() {
+        let global_path = home.join(".config").join("buckets").join("pantry.toml");
+        if global_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&global_path) {
+                if let Ok(toml_data) = toml::from_str::<PantryToml>(&content) {
+                    if let Some(ovr) = toml_data.overrides {
+                        overrides.extend(ovr);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Load local workspace: ./pantry.toml (precedence)
+    let local_path = PathBuf::from("pantry.toml");
+    if local_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&local_path) {
+            if let Ok(toml_data) = toml::from_str::<PantryToml>(&content) {
+                if let Some(ovr) = toml_data.overrides {
+                    overrides.extend(ovr);
+                }
+            }
+        }
+    }
+
+    overrides
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_pantry_toml() {
+        let toml_content = r#"
+[overrides."nodejs.org"]
+path = "/workspace/projects/custom-node"
+version = "20.99.0"
+provides = ["node", "npm"]
+
+[overrides.crush]
+path = "/workspace/projects/crush"
+"#;
+        let data: PantryToml = toml::from_str(toml_content).unwrap();
+        let ovr = data.overrides.unwrap();
+        assert_eq!(ovr.len(), 2);
+        
+        let node = ovr.get("nodejs.org").unwrap();
+        assert_eq!(node.path, "/workspace/projects/custom-node");
+        assert_eq!(node.version.as_deref(), Some("20.99.0"));
+        assert_eq!(node.provides.as_ref().unwrap(), &vec!["node".to_string(), "npm".to_string()]);
+
+        let crush = ovr.get("crush").unwrap();
+        assert_eq!(crush.path, "/workspace/projects/crush");
+        assert!(crush.version.is_none());
+        assert!(crush.provides.is_none());
+    }
+}
+
+
