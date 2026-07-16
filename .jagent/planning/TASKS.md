@@ -18,7 +18,7 @@ Every open item below represents a planned task or issue. See `.jagent/planning/
 Fallback to ptrace-based `proot` interception for environments without namespace namespace capability.
 
 - [x] **BUCKETS-1** (S): **Spike PRoot on Developer Box** — Verify basic command execution, path mapping, and standard streams/sentinel behaviors under `proot`.
-- [ ] **BUCKETS-2** (M): **Implement ProotBackend in sandbox.rs** — Implement `build_proot_args` mapping `SandboxProfile` fields (`project_dir`, `extra_ro_binds`, `allow_network`) to proot arguments. Warn on lack of real namespace-enforced network/PID isolation.
+- [x] **BUCKETS-2** (M): **Implement ProotBackend in sandbox.rs** — Implement `build_proot_args` mapping `SandboxProfile` fields (`project_dir`, `extra_ro_binds`, `allow_network`) to proot arguments. Warn on lack of real namespace-enforced network/PID isolation.
 - [ ] **BUCKETS-3** (M): **Android/Termux Verification** — Test and resolve Yama `ptrace_scope` and SELinux LSM restrictions on an actual Android node (`phone-claude`).
 
 ---
