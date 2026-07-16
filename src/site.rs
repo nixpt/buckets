@@ -70,6 +70,7 @@ mod tests {
             cache_dir,
             worktree_dir: None,
             platform: "linux/x86-64".to_string(),
+            pantry_overrides: std::collections::HashMap::new(),
         }
     }
 

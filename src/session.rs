@@ -578,6 +578,7 @@ mod tests {
             cache_dir: PathBuf::from("/tmp/.buckets-test"),
             worktree_dir: None,
             platform: "linux/x86-64".to_string(),
+            pantry_overrides: std::collections::HashMap::new(),
         };
 
         assert_eq!(
