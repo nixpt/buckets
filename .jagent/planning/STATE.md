@@ -1,8 +1,8 @@
 # Planning state — buckets
 
-**Updated:** 2026-07-16T13:56:00-05:00
-**Milestone focus:** M2 — Sandbox Portability (PRoot Fallback) (see ROADMAP.md, TASKS.md)
-**Branch:** `agent/antigravity/BUCKETS-2`
+**Updated:** 2026-07-16T14:32:00-05:00
+**Milestone focus:** M3 — Cargo Spec Resolution (see ROADMAP.md, TASKS.md)
+**Branch:** `agent/antigravity/BUCKETS-4`
 
 ## Delivery snapshot
 
@@ -16,7 +16,7 @@
 | GUI X11 Sandbox | **shipped** | Per-session isolated Xvfb server and Xauthority cookie management. |
 | Site sandboxing | **shipped** | Persistent origin-keyed storage or incognito directories wrapper around surfer browser. |
 | PRoot Portability Fallback | **shipped** | Fallback ptrace-based syscall path remapper when user namespaces/bwrap are unavailable. |
-| Cargo Spec Resolver | **backlog** | `cargo:` scheme resolver to build and cache cargo binaries locally. |
+| Cargo Spec Resolver | **shipped** | `cargo:` scheme resolver to build and cache cargo binaries locally via crates.io API. |
 
 ---
 
@@ -37,7 +37,7 @@ _None known._
 | Metric | Value |
 |--------|--------|
 | Total crates | 1 (Standalone binary + library) |
-| Tests passed | **154** (75 lib tests + 79 binary tests) |
+| Tests passed | **158** (77 lib tests + 81 binary tests) |
 | Tests failed | 0 |
 | Tests ignored | 0 |
 | Warnings | 0 |
@@ -52,8 +52,8 @@ _None known._
 ## Next 3 (from TASKS.md, priority order)
 
 1. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
-2. **Cargo spec resolution**: Design `cargo:` scheme spec type resolver to fetch and cache crates.io binaries (BUCKETS-4).
-3. **Cache Lock Optimization**: Fine-tune parallel cache locks (`cellar.rs`) for multiple fleet agents (BUCKETS-6).
+2. **Cache Lock Optimization**: Fine-tune parallel cache locks (`cellar.rs`) for multiple fleet agents (BUCKETS-6).
+3. **Local Pantry Overrides**: Create configuration to override package distributions with local directories or custom manifests (BUCKETS-5).
 
 ---
 

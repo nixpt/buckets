@@ -12,9 +12,9 @@ Tracked by agent. One-line items; complex work goes in `.jagent/planning/tickets
 
 ## Priority: Distribution Gap (Cargo spec resolver)
 
-- [ ] Implement `cargo:` scheme spec support (e.g., `buckets run cargo:crush-ast@0.2.0`)
-- [ ] Design resolve & install pipeline to fetch crate versions from crates.io registry
-- [ ] Download, build, and cache cargo package binaries into the cellar cache under `cargo/<crate>@<version>`
+- [x] Implement `cargo:` scheme spec support (e.g., `buckets run cargo:crush-ast@0.2.0`)
+- [x] Design resolve & install pipeline to fetch crate versions from crates.io registry
+- [x] Download, build, and cache cargo package binaries into the cellar cache under `cargo/<crate>@<version>`
 - [ ] Establish local/custom pantry override mechanism for offline or custom package configurations
 
 ## Priority: CLI & Usability Gaps
