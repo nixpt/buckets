@@ -187,6 +187,7 @@ fn build_proot_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
 
     a.push("-0".into());
     a.push("--kill-on-exit".into());
+    a.push("--link2symlink".into());
 
     if let Some(dir) = &profile.project_dir {
         let s = dir.to_string_lossy().to_string();
