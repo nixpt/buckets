@@ -109,8 +109,16 @@ pub fn build_bucketfile(
 ) -> Result<()> {
     let content = std::fs::read_to_string(bucketfile_path)
         .with_context(|| format!("Failed to read Bucketfile at {}", bucketfile_path.display()))?;
-    
+
     let directives = parse_bucketfile(&content)?;
+
+    // COPY sources are relative paths in the Bucketfile itself, so they must
+    // resolve against the Bucketfile's own directory — not the cwd of the
+    // `buckets` process, which may be anywhere when `-f <path>` or a
+    // non-cwd source directory is used.
+    let bucketfile_dir = bucketfile_path.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
     
     // Extract base dependencies from FROM
     let mut from_specs = Vec::new();
@@ -179,7 +187,12 @@ pub fn build_bucketfile(
                     workspace_path.join(cleaned_dest)
                 };
                 
-                let host_src = Path::new(src);
+                let src_path = Path::new(src);
+                let host_src = if src_path.is_absolute() {
+                    src_path.to_path_buf()
+                } else {
+                    bucketfile_dir.join(src_path)
+                };
                 if host_src.is_dir() {
                     copy_dir_all(host_src, &target_dest_path)?;
                 } else {
