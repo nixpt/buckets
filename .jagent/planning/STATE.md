@@ -1,8 +1,8 @@
 # Planning state — buckets
 
-**Updated:** 2026-07-16T13:56:00-05:00
-**Milestone focus:** M2 — Sandbox Portability (PRoot Fallback) (see ROADMAP.md, TASKS.md)
-**Branch:** `agent/antigravity/BUCKETS-2`
+**Updated:** 2026-07-16T14:39:00-05:00
+**Milestone focus:** M4 — Fleet Concurrency & Optimization (see ROADMAP.md, TASKS.md)
+**Branch:** `agent/antigravity/BUCKETS-6`
 
 ## Delivery snapshot
 
@@ -37,7 +37,7 @@ _None known._
 | Metric | Value |
 |--------|--------|
 | Total crates | 1 (Standalone binary + library) |
-| Tests passed | **154** (75 lib tests + 79 binary tests) |
+| Tests passed | **155** (76 lib tests + 79 binary tests) |
 | Tests failed | 0 |
 | Tests ignored | 0 |
 | Warnings | 0 |
@@ -53,7 +53,7 @@ _None known._
 
 1. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
 2. **Cargo spec resolution**: Design `cargo:` scheme spec type resolver to fetch and cache crates.io binaries (BUCKETS-4).
-3. **Cache Lock Optimization**: Fine-tune parallel cache locks (`cellar.rs`) for multiple fleet agents (BUCKETS-6).
+3. **Local Pantry Overrides**: Create configuration to override package distributions with local directories or custom manifests (BUCKETS-5).
 
 ---
 
