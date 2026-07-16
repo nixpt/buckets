@@ -204,7 +204,6 @@ fn build_proot_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
     a.push("-w".into());
     a.push(cwd.to_string_lossy().to_string());
 
-    a.push("--".into());
     a.push(program.to_string());
     a.extend(args.iter().cloned());
 
@@ -353,12 +352,26 @@ mod tests {
     }
 
     #[test]
-    fn proot_program_and_args_come_after_separator() {
+    fn proot_program_and_args_come_at_the_end() {
         let profile = SandboxProfile::default();
         let args = build_proot_args("node", &["-e".to_string(), "1+1".to_string()], Path::new("/tmp"), &profile);
-        let sep = args.iter().position(|a| a == "--").expect("-- separator present");
-        assert_eq!(args[sep + 1], "node");
-        assert_eq!(args[sep + 2], "-e");
-        assert_eq!(args[sep + 3], "1+1");
+        let len = args.len();
+        assert_eq!(args[len - 3], "node");
+        assert_eq!(args[len - 2], "-e");
+        assert_eq!(args[len - 1], "1+1");
+    }
+
+    #[test]
+    fn proot_execution_smoke_test() {
+        if which_proot().is_none() {
+            return;
+        }
+        let profile = SandboxProfile::default();
+        let args = build_proot_args("true", &[], Path::new("/tmp"), &profile);
+        let status = Command::new("proot")
+            .args(&args)
+            .status()
+            .expect("Failed to execute proot command");
+        assert!(status.success());
     }
 }
