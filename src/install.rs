@@ -32,23 +32,26 @@ fn read_package_json_bin(source_dir: &Path) -> Option<Vec<(String, String)>> {
     None
 }
 
-fn install_path(config: &Config, pkg: &Package) -> Result<Installation> {
-    let source_path_str = pkg.project.strip_prefix("path:")
-        .context("Missing path: prefix")?;
-    let source_dir = PathBuf::from(source_path_str).canonicalize()
-        .with_context(|| format!("Local path does not exist: {source_path_str}"))?;
-
+fn install_local_dir(
+    config: &Config,
+    pkg: &Package,
+    source_dir: &Path,
+    provides: Option<&[String]>,
+) -> Result<Installation> {
     let version_str = dist_version_string(&pkg.version);
     let target_dir = config.version_dir(&pkg.project, &version_str);
 
     eprintln!("▶ building local source path: {}", source_dir.display());
 
-    let plan = crate::project::detect(&source_dir)
-        .with_context(|| format!("Failed to detect build system at {}", source_dir.display()))?;
+    let plan = crate::project::detect(source_dir).ok();
 
-    // Resolve build toolchain (sandboxed build needs its toolchain resolved first)
-    let resolved = crate::resolve::resolve_multi(&plan.toolchain_specs, config, &crate::index::Index::builtin())
-        .with_context(|| format!("Failed to resolve toolchain: {:?}", plan.toolchain_specs))?;
+    // Resolve build toolchain if build system is detected
+    let resolved = if let Some(ref p) = plan {
+        crate::resolve::resolve_multi(&p.toolchain_specs, config, &crate::index::Index::builtin())
+            .ok()
+    } else {
+        None
+    };
 
     // Create the target cellar directory structures
     let bin_dir = target_dir.join("bin");
@@ -57,76 +60,103 @@ fn install_path(config: &Config, pkg: &Package) -> Result<Installation> {
     }
     fs::create_dir_all(&bin_dir)?;
 
-    if source_dir.join("Cargo.toml").exists() {
-        eprintln!("↓ compiling cargo project via path...");
-        let mut cmd = std::process::Command::new("cargo");
-        cmd.arg("install")
-            .arg("--path")
-            .arg(&source_dir)
-            .arg("--root")
-            .arg(&target_dir)
-            .arg("--force");
-        for (key, value) in &resolved.env {
-            cmd.env(key, value);
-        }
-        let status = cmd.status()?;
-        if !status.success() {
-            anyhow::bail!("cargo install failed for {}", source_dir.display());
-        }
-    } else if source_dir.join("go.mod").exists() {
-        eprintln!("↓ compiling go project via path...");
-        let bin_name = source_dir.file_name().unwrap().to_string_lossy().to_string();
-        let mut cmd = std::process::Command::new("go");
-        cmd.arg("build")
-            .arg("-o")
-            .arg(bin_dir.join(&bin_name))
-            .arg(".")
-            .current_dir(&source_dir);
-        for (key, value) in &resolved.env {
-            cmd.env(key, value);
-        }
-        let status = cmd.status()?;
-        if !status.success() {
-            anyhow::bail!("go build failed for {}", source_dir.display());
-        }
-    } else {
-        // Run standard build command if present
-        let (program, args) = plan.build_cmd.split_first().context("empty build command")?;
-        eprintln!("↓ running build command: {}", plan.build_cmd.join(" "));
-        let mut cmd = std::process::Command::new(program);
-        cmd.args(args).current_dir(&source_dir);
-        for (key, value) in &resolved.env {
-            cmd.env(key, value);
-        }
-        let status = cmd.status()?;
-        if !status.success() {
-            anyhow::bail!("Build command failed for {}", source_dir.display());
-        }
-
-        // Symlink or wrap binaries/scripts
-        if source_dir.join("bin").exists() {
-            for entry in fs::read_dir(source_dir.join("bin"))? {
-                let entry = entry?;
-                let name = entry.file_name();
-                let dest = bin_dir.join(name);
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(entry.path(), dest)?;
+    if let Some(resolved) = resolved {
+        if source_dir.join("Cargo.toml").exists() {
+            eprintln!("↓ compiling cargo project via path...");
+            let mut cmd = std::process::Command::new("cargo");
+            cmd.arg("install")
+                .arg("--path")
+                .arg(source_dir)
+                .arg("--root")
+                .arg(&target_dir)
+                .arg("--force");
+            for (key, value) in &resolved.env {
+                cmd.env(key, value);
             }
-        } else if source_dir.join("package.json").exists() {
-            if let Some(bins) = read_package_json_bin(&source_dir) {
-                for (name, rel_path) in bins {
-                    let src_file = source_dir.join(rel_path);
-                    let dest = bin_dir.join(name);
-                    let wrapper_content = format!(
-                        "#!/usr/bin/env node\nrequire('{}');\n",
-                        src_file.to_string_lossy()
-                    );
-                    fs::write(&dest, wrapper_content)?;
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
-                    }
+            let status = cmd.status()?;
+            if !status.success() {
+                anyhow::bail!("cargo install failed for {}", source_dir.display());
+            }
+        } else if source_dir.join("go.mod").exists() {
+            eprintln!("↓ compiling go project via path...");
+            let bin_name = source_dir.file_name().unwrap().to_string_lossy().to_string();
+            let mut cmd = std::process::Command::new("go");
+            cmd.arg("build")
+                .arg("-o")
+                .arg(bin_dir.join(&bin_name))
+                .arg(".")
+                .current_dir(source_dir);
+            for (key, value) in &resolved.env {
+                cmd.env(key, value);
+            }
+            let status = cmd.status()?;
+            if !status.success() {
+                anyhow::bail!("go build failed for {}", source_dir.display());
+            }
+        } else if let Some(ref p) = plan {
+            if !p.build_cmd.is_empty() {
+                let (program, args) = p.build_cmd.split_first().context("empty build command")?;
+                eprintln!("↓ running build command: {}", p.build_cmd.join(" "));
+                let mut cmd = std::process::Command::new(program);
+                cmd.args(args).current_dir(source_dir);
+                for (key, value) in &resolved.env {
+                    cmd.env(key, value);
+                }
+                let status = cmd.status()?;
+                if !status.success() {
+                    anyhow::bail!("Build command failed for {}", source_dir.display());
+                }
+            }
+        }
+    }
+
+    // Symlink or wrap binaries/scripts
+    if let Some(explicit_provides) = provides {
+        for bin_name in explicit_provides {
+            let src_in_bin = source_dir.join("bin").join(bin_name);
+            let src_in_root = source_dir.join(bin_name);
+            let src_file = if src_in_bin.exists() {
+                src_in_bin
+            } else if src_in_root.exists() {
+                src_in_root
+            } else {
+                continue;
+            };
+            let dest = bin_dir.join(bin_name);
+            if dest.exists() || dest.is_symlink() {
+                let _ = fs::remove_file(&dest);
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&src_file, &dest)?;
+        }
+    } else if source_dir.join("bin").exists() {
+        for entry in fs::read_dir(source_dir.join("bin"))? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let dest = bin_dir.join(name);
+            if dest.exists() || dest.is_symlink() {
+                let _ = fs::remove_file(&dest);
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(entry.path(), dest)?;
+        }
+    } else if source_dir.join("package.json").exists() {
+        if let Some(bins) = read_package_json_bin(source_dir) {
+            for (name, rel_path) in bins {
+                let src_file = source_dir.join(rel_path);
+                let dest = bin_dir.join(name);
+                if dest.exists() || dest.is_symlink() {
+                    let _ = fs::remove_file(&dest);
+                }
+                let wrapper_content = format!(
+                    "#!/usr/bin/env node\nrequire('{}');\n",
+                    src_file.to_string_lossy()
+                );
+                fs::write(&dest, wrapper_content)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
                 }
             }
         }
@@ -139,6 +169,24 @@ fn install_path(config: &Config, pkg: &Package) -> Result<Installation> {
         pkg: pkg.clone(),
         path: target_dir,
     })
+}
+
+fn install_path(config: &Config, pkg: &Package) -> Result<Installation> {
+    let source_path_str = pkg.project.strip_prefix("path:")
+        .context("Missing path: prefix")?;
+    let source_dir = PathBuf::from(source_path_str).canonicalize()
+        .with_context(|| format!("Local path does not exist: {source_path_str}"))?;
+    install_local_dir(config, pkg, &source_dir, None)
+}
+
+fn install_pantry_override(
+    config: &Config,
+    pkg: &Package,
+    ovr: &crate::config::PantryOverride,
+) -> Result<Installation> {
+    let source_dir = PathBuf::from(&ovr.path).canonicalize()
+        .with_context(|| format!("Pantry override path does not exist: {}", ovr.path))?;
+    install_local_dir(config, pkg, &source_dir, ovr.provides.as_deref())
 }
 
 fn install_cargo(config: &Config, pkg: &Package) -> Result<Installation> {
@@ -179,6 +227,9 @@ fn install_cargo(config: &Config, pkg: &Package) -> Result<Installation> {
 /// Returns the `Installation` pointing to the cached directory.
 /// Uses a temp dir + atomic rename pattern for crash safety.
 pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
+    if let Some(ovr) = config.pantry_overrides.get(&pkg.project) {
+        return install_pantry_override(config, pkg, ovr);
+    }
     if pkg.project.starts_with("path:") {
         return install_path(config, pkg);
     }
@@ -418,5 +469,59 @@ edition = "2021"
 
         assert!(elapsed >= std::time::Duration::from_millis(80), "elapsed was {:?}", elapsed);
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn test_pantry_override_prebuilt() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let src_dir = tempdir.path().join("my-custom-src");
+        fs::create_dir_all(src_dir.join("bin")).unwrap();
+        
+        // Write a mock script inside bin/
+        let script_path = src_dir.join("bin").join("my-test-tool");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\necho 'hello from pantry override!'\n"
+        ).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // Setup Config manually with overrides
+        let mut config = Config::default();
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert(
+            "my-custom-override".to_string(),
+            crate::config::PantryOverride {
+                path: src_dir.to_string_lossy().to_string(),
+                version: Some("2.3.4".to_string()),
+                provides: Some(vec!["my-test-tool".to_string()]),
+            }
+        );
+        config.pantry_overrides = overrides;
+
+        // Resolve version
+        let resolved_versions = crate::inventory::list_remote_versions(&config, "my-custom-override").unwrap();
+        assert_eq!(resolved_versions, vec![semver::Version::new(2, 3, 4)]);
+
+        // Install
+        let pkg = Package {
+            project: "my-custom-override".to_string(),
+            version: semver::Version::new(2, 3, 4),
+        };
+        let inst = install(&config, &pkg).unwrap();
+        
+        // Assert symlink created
+        let bin_path = inst.path.join("bin").join("my-test-tool");
+        assert!(bin_path.exists());
+
+        // Execute and verify
+        let output = std::process::Command::new(bin_path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.trim(), "hello from pantry override!");
     }
 }

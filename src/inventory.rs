@@ -73,6 +73,12 @@ fn list_cargo_versions(project: &str) -> Result<Vec<Version>> {
 
 /// Fetch the list of available versions for a project from the dist server.
 pub fn list_remote_versions(config: &Config, project: &str) -> Result<Vec<Version>> {
+    if let Some(ovr) = config.pantry_overrides.get(project) {
+        let v_str = ovr.version.as_deref().unwrap_or("0.0.0");
+        if let Ok(v) = Version::parse(v_str) {
+            return Ok(vec![v]);
+        }
+    }
     if project.starts_with("path:") {
         return Ok(vec![Version::new(0, 0, 0)]);
     }
@@ -159,6 +165,7 @@ mod tests {
             cache_dir: std::path::PathBuf::from("/tmp/test"),
             worktree_dir: None,
             platform: "linux/x86-64".to_string(),
+            pantry_overrides: std::collections::HashMap::new(),
         };
         assert_eq!(
             config.versions_url("nodejs.org"),
