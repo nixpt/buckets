@@ -84,10 +84,13 @@ impl NetSession {
         eprintln!("▶ creating buck-net '{name}'");
 
         // --user: rootless user namespace (maps host uid -> uid 0 inside)
+        // --map-root-user (-r): ensures the namespace has root capabilities
+        //   (without this, the process has UID 65534/nobody with CapEff=0;
+        //   confirmed: "ip link set lo up" fails with "Operation not permitted")
         // --net:  fresh network namespace inside the user namespace
         // sleep infinity: keeps the namespace alive; we store its PID
         let keeper = Command::new("unshare")
-            .args(["--user", "--net", "--", "sleep", "infinity"])
+            .args(["--user", "--map-root-user", "--net", "--", "sleep", "infinity"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
