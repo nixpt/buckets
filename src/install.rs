@@ -70,6 +70,27 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     fs::create_dir_all(&project_dir)
         .with_context(|| format!("Failed to create cache dir: {}", project_dir.display()))?;
 
+    // Acquire exclusive write lock on this version's lock file
+    let lock_path = project_dir.join(format!(".install-v{version_str}.lock"));
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open lock file: {}", lock_path.display()))?;
+
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let _guard = lock.write().with_context(|| format!("Failed to acquire write lock on: {}", lock_path.display()))?;
+
+    // Double-check under lock
+    if target_dir.join("bin").exists() {
+        cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
+        return Ok(Installation {
+            pkg: pkg.clone(),
+            path: target_dir,
+        });
+    }
+
     // Download the bottle
     let url = config.bottle_url(&pkg.project, &version_str);
     eprintln!("↓ fetching {url}");
@@ -172,3 +193,56 @@ fn rename_contents(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_concurrency_lock() {
+        if std::env::var("BUCKETS_TEST_LOCK_CHILD").is_ok() {
+            let lock_path = PathBuf::from(std::env::var("LOCK_FILE_PATH").unwrap());
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&lock_path)
+                .unwrap();
+            let mut lock = fd_lock::RwLock::new(file);
+            let _guard = lock.write().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            return;
+        }
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let lock_path = tempdir.path().join("test.lock");
+
+        // Spawn a child process using the same test binary
+        let current_exe = std::env::current_exe().unwrap();
+        let mut child = std::process::Command::new(current_exe)
+            .arg("test_process_concurrency_lock") // run this test in child
+            .env("BUCKETS_TEST_LOCK_CHILD", "1")
+            .env("LOCK_FILE_PATH", &lock_path)
+            .spawn()
+            .unwrap();
+
+        // Give the child a moment to start and acquire lock
+        std::thread::sleep(std::time::Duration::from_millis(40));
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .unwrap();
+        let mut lock = fd_lock::RwLock::new(file);
+
+        let start = std::time::Instant::now();
+        let _guard = lock.write().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(elapsed >= std::time::Duration::from_millis(80), "elapsed was {:?}", elapsed);
+        child.wait().unwrap();
+    }
+}
+
