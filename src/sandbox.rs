@@ -73,9 +73,31 @@ pub fn sandboxed_command(
     env: &HashMap<String, String>,
     profile: &SandboxProfile,
 ) -> Command {
-    if which_bwrap().is_none() {
+    if let Some(bwrap_path) = which_bwrap() {
+        let mut cmd = Command::new(bwrap_path);
+        for arg in build_bwrap_args(program, args, cwd, profile) {
+            cmd.arg(arg);
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd
+    } else if let Some(proot_path) = which_proot() {
         eprintln!(
-            "⚠ bucket: bwrap not found on PATH — running WITHOUT sandbox isolation \
+            "⚠ bucket: bwrap not found — falling back to proot compatibility isolation \
+             (network and PID namespaces are NOT isolated under this backend)"
+        );
+        let mut cmd = Command::new(proot_path);
+        for arg in build_proot_args(program, args, cwd, profile) {
+            cmd.arg(arg);
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd
+    } else {
+        eprintln!(
+            "⚠ bucket: bwrap and proot not found on PATH — running WITHOUT sandbox isolation \
              (install bubblewrap for real containment)"
         );
         let mut cmd = Command::new(program);
@@ -83,23 +105,22 @@ pub fn sandboxed_command(
         for (k, v) in env {
             cmd.env(k, v);
         }
-        return cmd;
+        cmd
     }
-
-    let mut cmd = Command::new("bwrap");
-    for arg in build_bwrap_args(program, args, cwd, profile) {
-        cmd.arg(arg);
-    }
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    cmd
 }
 
 fn which_bwrap() -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|dir| dir.join("bwrap"))
+            .find(|p| p.is_file())
+    })
+}
+
+fn which_proot() -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join("proot"))
             .find(|p| p.is_file())
     })
 }
@@ -155,6 +176,34 @@ fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
     a.push(cwd.to_string_lossy().to_string());
 
     a.push("--".into());
+    a.push(program.to_string());
+    a.extend(args.iter().cloned());
+
+    a
+}
+
+fn build_proot_args(program: &str, args: &[String], cwd: &Path, profile: &SandboxProfile) -> Vec<String> {
+    let mut a: Vec<String> = Vec::new();
+
+    a.push("-0".into());
+    a.push("--kill-on-exit".into());
+    a.push("--link2symlink".into());
+
+    if let Some(dir) = &profile.project_dir {
+        let s = dir.to_string_lossy().to_string();
+        a.push("-b".into());
+        a.push(format!("{}:{}", s, s));
+    }
+
+    for bind in &profile.extra_ro_binds {
+        let s = bind.to_string_lossy().to_string();
+        a.push("-b".into());
+        a.push(format!("{}:{}", s, s));
+    }
+
+    a.push("-w".into());
+    a.push(cwd.to_string_lossy().to_string());
+
     a.push(program.to_string());
     a.extend(args.iter().cloned());
 
@@ -268,5 +317,61 @@ mod tests {
         let args = build_bwrap_args("echo", &[], Path::new("/some/cwd"), &profile);
         let pos = args.iter().position(|a| a == "--chdir").expect("--chdir present");
         assert_eq!(args[pos + 1], "/some/cwd");
+    }
+
+    #[test]
+    fn proot_chdir_set_to_cwd() {
+        let profile = SandboxProfile::default();
+        let args = build_proot_args("echo", &[], Path::new("/some/cwd"), &profile);
+        let pos = args.iter().position(|a| a == "-w").expect("-w present");
+        assert_eq!(args[pos + 1], "/some/cwd");
+    }
+
+    #[test]
+    fn proot_extra_ro_binds_included() {
+        let profile = SandboxProfile {
+            extra_ro_binds: vec![
+                PathBuf::from("/home/user/.buckets/nodejs.org/v20.20.2"),
+            ],
+            ..Default::default()
+        };
+        let args = build_proot_args("node", &[], Path::new("/tmp"), &profile);
+        let pos = args.iter().position(|a| a == "-b").expect("-b present");
+        assert_eq!(args[pos + 1], "/home/user/.buckets/nodejs.org/v20.20.2:/home/user/.buckets/nodejs.org/v20.20.2");
+    }
+
+    #[test]
+    fn proot_project_dir_gets_bind() {
+        let profile = SandboxProfile {
+            project_dir: Some(PathBuf::from("/home/user/proj")),
+            ..Default::default()
+        };
+        let args = build_proot_args("cargo", &["build".to_string()], Path::new("/home/user/proj"), &profile);
+        let pos = args.iter().position(|a| a == "-b").expect("-b present");
+        assert_eq!(args[pos + 1], "/home/user/proj:/home/user/proj");
+    }
+
+    #[test]
+    fn proot_program_and_args_come_at_the_end() {
+        let profile = SandboxProfile::default();
+        let args = build_proot_args("node", &["-e".to_string(), "1+1".to_string()], Path::new("/tmp"), &profile);
+        let len = args.len();
+        assert_eq!(args[len - 3], "node");
+        assert_eq!(args[len - 2], "-e");
+        assert_eq!(args[len - 1], "1+1");
+    }
+
+    #[test]
+    fn proot_execution_smoke_test() {
+        if which_proot().is_none() {
+            return;
+        }
+        let profile = SandboxProfile::default();
+        let args = build_proot_args("true", &[], Path::new("/tmp"), &profile);
+        let status = Command::new("proot")
+            .args(&args)
+            .status()
+            .expect("Failed to execute proot command");
+        assert!(status.success());
     }
 }

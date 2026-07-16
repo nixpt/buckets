@@ -1,8 +1,8 @@
 # Planning state — buckets
 
-**Updated:** 2026-07-16T13:25:00-05:00
+**Updated:** 2026-07-16T13:56:00-05:00
 **Milestone focus:** M2 — Sandbox Portability (PRoot Fallback) (see ROADMAP.md, TASKS.md)
-**Branch:** `master`
+**Branch:** `agent/antigravity/BUCKETS-2`
 
 ## Delivery snapshot
 
@@ -15,7 +15,7 @@
 | Ephemeral Worktrees | **shipped** | Cheap checkout management using git worktree. |
 | GUI X11 Sandbox | **shipped** | Per-session isolated Xvfb server and Xauthority cookie management. |
 | Site sandboxing | **shipped** | Persistent origin-keyed storage or incognito directories wrapper around surfer browser. |
-| PRoot Portability Fallback | **backlog** | fallback syscall path remapper when user namespaces/bwrap are unavailable. |
+| PRoot Portability Fallback | **shipped** | Fallback ptrace-based syscall path remapper when user namespaces/bwrap are unavailable. |
 | Cargo Spec Resolver | **backlog** | `cargo:` scheme resolver to build and cache cargo binaries locally. |
 
 ---
@@ -37,7 +37,7 @@ _None known._
 | Metric | Value |
 |--------|--------|
 | Total crates | 1 (Standalone binary + library) |
-| Tests passed | **146** (71 lib tests + 75 binary tests) |
+| Tests passed | **154** (75 lib tests + 79 binary tests) |
 | Tests failed | 0 |
 | Tests ignored | 0 |
 | Warnings | 0 |
@@ -51,9 +51,9 @@ _None known._
 
 ## Next 3 (from TASKS.md, priority order)
 
-1. **PRoot Sandbox Fallback**: Integrate `proot` in `sandbox.rs` as a 3rd execution fallback rung.
-2. **Cargo spec resolution**: Design `cargo:` scheme spec type resolver to fetch and cache crates.io binaries.
-3. **Cache Lock Optimization**: Fine-tune parallel cache locks (`cellar.rs`) for multiple fleet agents.
+1. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
+2. **Cargo spec resolution**: Design `cargo:` scheme spec type resolver to fetch and cache crates.io binaries (BUCKETS-4).
+3. **Cache Lock Optimization**: Fine-tune parallel cache locks (`cellar.rs`) for multiple fleet agents (BUCKETS-6).
 
 ---
 
