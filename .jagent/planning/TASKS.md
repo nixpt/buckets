@@ -28,6 +28,7 @@ Fallback to ptrace-based `proot` interception for environments without namespace
 Bridge the distribution gap for Rust-based tools by downloading and building them from crates.io natively.
 
 - [x] **BUCKETS-4** (L): **Cargo Spec Type Engine** — Implement parsing, version resolving, fetching, building, and caching cargo packages (e.g. `buckets run cargo:crush-ast@0.2.0`).
+- [x] **BUCKETS-8** (M): **Local Path Spec Support** — Support running local project source code directly in buckets via a `path:` spec prefix (e.g. `path:.`).
 - [ ] **BUCKETS-5** (M): **Local Pantry Overrides** — Create configuration to override package distributions with local directories or custom manifests.
 
 ---

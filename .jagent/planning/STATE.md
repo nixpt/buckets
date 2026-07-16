@@ -1,8 +1,8 @@
 # Planning state — buckets
 
-**Updated:** 2026-07-16T14:39:00-05:00
-**Milestone focus:** M4 — Fleet Concurrency & Optimization (see ROADMAP.md, TASKS.md)
-**Branch:** `master` (BUCKETS-4 + BUCKETS-6 both merged)
+**Updated:** 2026-07-16T15:00:00-05:00
+**Milestone focus:** M3 — Local Path Spec Support (see ROADMAP.md, TASKS.md)
+**Branch:** `master` (BUCKETS-4 + BUCKETS-6 + BUCKETS-8 all merged)
 
 ## Delivery snapshot
 
@@ -18,6 +18,7 @@
 | PRoot Portability Fallback | **shipped** | Fallback ptrace-based syscall path remapper when user namespaces/bwrap are unavailable. |
 | Cargo Spec Resolver | **shipped** | `cargo:` scheme resolver to build and cache cargo binaries locally via crates.io API. |
 | Cellar Cache Locking | **shipped** | Exclusive advisory file locks (`fd-lock`) around cellar installs — safe for concurrent fleet agents installing the same package. |
+| Local Path Spec Support | **shipped** | `path:<local-path>` specs — detects the build system (Cargo/Go/npm/generic) and compiles+caches a local project's binaries for sandboxed execution. |
 
 ---
 
