@@ -32,6 +32,9 @@ pub(crate) fn parse_dist_version(ver_str: &str) -> Option<Version> {
 
 /// Fetch the list of available versions for a project from the dist server.
 pub fn list_remote_versions(config: &Config, project: &str) -> Result<Vec<Version>> {
+    if project.starts_with("path:") {
+        return Ok(vec![Version::new(0, 0, 0)]);
+    }
     let url = config.versions_url(project);
     let response = ureq::get(&url)
         .call()
@@ -121,5 +124,12 @@ mod tests {
             config.bottle_url("nodejs.org", "20.11.0"),
             "https://dist.pkgx.dev/nodejs.org/linux/x86-64/v20.11.0.tar.xz"
         );
+    }
+
+    #[test]
+    fn test_list_path_versions() {
+        let config = Config::default();
+        let versions = list_remote_versions(&config, "path:/tmp/does-not-matter").unwrap();
+        assert_eq!(versions, vec![Version::parse("0.0.0").unwrap()]);
     }
 }

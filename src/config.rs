@@ -63,12 +63,12 @@ impl Config {
 
     /// Path to the cached installation directory for a specific project+version.
     pub fn version_dir(&self, project: &str, version: &str) -> PathBuf {
-        self.cache_dir.join(project).join(format!("v{version}"))
+        self.cache_dir.join(sanitize_project_name(project)).join(format!("v{version}"))
     }
 
     /// Path to the project's cache directory (contains v* subdirs).
     pub fn project_dir(&self, project: &str) -> PathBuf {
-        self.cache_dir.join(project)
+        self.cache_dir.join(sanitize_project_name(project))
     }
 
     /// URL for a bottle tarball. Path order is `{project}/{platform}/v{version}.tar.xz`
@@ -129,4 +129,8 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(windows)]
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").map(PathBuf::from)
+}
+
+fn sanitize_project_name(name: &str) -> String {
+    name.replace(':', "-")
 }
