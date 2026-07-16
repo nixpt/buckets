@@ -1,5 +1,9 @@
 # buckets
 
+<p align="center">
+  <img src="assets/banner.jpg" alt="buckets banner" width="100%">
+</p>
+
 **Throwaway runtime buckets for AI agents.**
 
 Resolve, fetch, and run any CLI tool in an isolated ephemeral environment —
