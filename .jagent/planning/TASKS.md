@@ -39,3 +39,4 @@ Ensure concurrent performance and resource sharing for parallel fleet agents.
 
 - [x] **BUCKETS-6** (M): **Cellar Cache Locking** — Optimize multi-agent write locks to prevent corrupted/concurrent extractions in the shared cache.
 - [x] **BUCKETS-7** (S): **CLI Diagnostic Cleanups** — Polish error outputs when remote connections fail or index versions are not found.
+- [ ] **gap** — buck-net's expose_port (socat/nsenter host<->namespace port forwarding) has zero live-test coverage — only pid_alive/list_all bookkeeping is unit-tested. Worth a live-test pass before relying on it.  _(cece-buckets, 2026-07-16)_
