@@ -80,3 +80,14 @@ Artifacts: src/site.rs (SiteTarget: persistent host-keyed storage dir or --incog
 Rejected alternatives:
 - **re-wiring the orphaned exosphere-apps sitecapsule crates (known dead end, already investigated and abandoned at EXO-DC8); building Pake's actual Tauri/webkit2gtk pipeline per-site (heavier, unnecessary since surfer/super-surfer already provide a native renderer with zero extra toolchain); buckets building surfer/super-surfer itself (kept as a separate one-time cargo build, buckets site only consumes an already-built binary)**
 
+
+## 2026-07-16T18:11:30-05:00 — BUCKETS-9-10-continue: verified 2 uncommitted fixes live, fixed 3rd (COPY path resolution)
+
+Reason:
+antigravity left buck-net --map-root-user and shlex ENTRYPOINT parsing fixed but uncommitted, and a 3rd real bug (COPY src resolved against process cwd instead of Bucketfile's directory) untouched. Dispatched to verify the 2 existing fixes live and fix the 3rd.
+
+Artifacts: src/net.rs,src/main.rs,src/bucketfile.rs
+
+Outcome:
+All 3 verified via real buckets build/run (not just unit tests): buck-net create/rm succeed with no permission error, quoted ENTRYPOINT prints real output, COPY from a different cwd now resolves correctly. 93/93 tests pass. Committed as 4 separate fix commits + 1 docs commit + 1 unrelated pre-existing validate_android.sh commit, pushed to agent/cece-buckets/BUCKETS-9-10-continue @ 89b6bc0.
+

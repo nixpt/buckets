@@ -339,7 +339,9 @@ pub fn session_start(
         let profile = SandboxProfile {
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
+            extra_rw_binds: Vec::new(),
             allow_network: false,
+            net_ns: None,
         };
 
         let mut child = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);
@@ -438,7 +440,9 @@ pub fn session_exec(
     let profile = SandboxProfile {
         project_dir: Some(cwd.clone()),
         extra_ro_binds,
+        extra_rw_binds: Vec::new(),
         allow_network: false,
+        net_ns: None,
     };
 
     let mut cmd = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);

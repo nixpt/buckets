@@ -1,5 +1,5 @@
 # State
 
-Updated: 2026-07-16T13:56:13-05:00
+Updated: 2026-07-16T18:11:38-05:00
 
-154 passing tests, implemented PRoot compatibility sandbox fallback in sandbox.rs, updated BUCKETS-1 and BUCKETS-2 tickets, and checked off tasks.
+BUCKETS-9 and BUCKETS-10 both marked Done. 93 passing tests (0 failures once GIT_WORK_TREE is unset — see trap). Fixed buck-net --map-root-user, shlex-based ENTRYPOINT/CMD parsing, and Bucketfile COPY src path resolution (now anchored to Bucketfile's own directory, not process cwd). All 3 verified live via real buckets build/run.

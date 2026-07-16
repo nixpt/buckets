@@ -22,7 +22,7 @@ PATH="$CLEAN_PATH" $BUCKETS_BIN run cargo:ripgrep@14.1.0 -- rg --version
 echo "Testing concurrent cellar cache locks..."
 # Clear cached package first to force installation
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/buckets"
-rm -rf "$CACHE_DIR/cargo:ripgrep"
+rm -rf "${CACHE_DIR:?CACHE_DIR must be set}/cargo:ripgrep"
 
 # Start two installations concurrently
 echo "Launching two parallel installations of cargo:ripgrep..."

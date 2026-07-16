@@ -31,9 +31,17 @@ pub struct SandboxProfile {
     /// [`crate::types::Installation`]'s path, so the toolchain itself is
     /// visible without being writable from inside the sandbox.
     pub extra_ro_binds: Vec<PathBuf>,
+    /// Additional read-write binds for building/caching.
+    pub extra_rw_binds: Vec<PathBuf>,
     /// Build commands generally need their package registry (crates.io,
     /// npm, ...); plain `run`/`shell` default to no network.
     pub allow_network: bool,
+    /// If set, join this named buck-net namespace instead of unsharing or
+    /// sharing the host network. Value is a path like `/proc/{pid}/ns/net`.
+    /// Takes precedence over `allow_network` for namespace routing — the
+    /// bucket gets whatever the namespace has (loopback only by default;
+    /// NAT if the namespace was configured for it).
+    pub net_ns: Option<String>,
 }
 
 /// Base host directories bound read-only into every sandbox — enough for
@@ -154,7 +162,14 @@ fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
     a.push("--tmpfs".into());
     a.push("/tmp".into());
     a.push("--unshare-pid".into());
-    if !profile.allow_network {
+    // Network: three modes in priority order —
+    //   1. buck-net namespace (--netns): join an isolated virtual net
+    //   2. unshare (--unshare-net): completely cut off
+    //   3. host network (neither flag): full access for build toolchains
+    if let Some(ref ns_path) = profile.net_ns {
+        a.push("--netns".into());
+        a.push(ns_path.clone());
+    } else if !profile.allow_network {
         a.push("--unshare-net".into());
     }
 
@@ -167,6 +182,13 @@ fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
 
     if let Some(dir) = &profile.project_dir {
         let s = dir.to_string_lossy().to_string();
+        a.push("--bind".into());
+        a.push(s.clone());
+        a.push(s);
+    }
+
+    for bind in &profile.extra_rw_binds {
+        let s = bind.to_string_lossy().to_string();
         a.push("--bind".into());
         a.push(s.clone());
         a.push(s);
@@ -191,6 +213,12 @@ fn build_proot_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
 
     if let Some(dir) = &profile.project_dir {
         let s = dir.to_string_lossy().to_string();
+        a.push("-b".into());
+        a.push(format!("{}:{}", s, s));
+    }
+
+    for bind in &profile.extra_rw_binds {
+        let s = bind.to_string_lossy().to_string();
         a.push("-b".into());
         a.push(format!("{}:{}", s, s));
     }
