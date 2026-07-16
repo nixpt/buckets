@@ -4,9 +4,9 @@
 |-------|-------|
 | **ID** | BUCKETS-4 |
 | **Priority** | P3 |
-| **Status** | Backlog |
+| **Status** | Done |
 | **Phase** | M3 |
-| **Assignee** | unassigned |
+| **Assignee** | antigravity |
 | **Dependencies** | none |
 | **Estimated effort** | L |
 
@@ -16,12 +16,12 @@
 
 ## Success criteria
 
-- [ ] Support the `cargo:` prefix in package specs (e.g. `cargo:crush-ast@0.2.0`).
-- [ ] Parse crate names and versions/semver constraints from cargo specs.
-- [ ] Query crates.io API to resolve package version constraints.
-- [ ] Build the crate using `cargo install --root <cached-cellar-path>` or a manual `cargo build` pipeline.
-- [ ] Cache resulting binary in the cellar under a `cargo/` prefix directory.
-- [ ] Composing path environment includes the cached binary directory.
+- [x] Support the `cargo:` prefix in package specs (e.g. `cargo:crush-ast@0.2.0`).
+- [x] Parse crate names and versions/semver constraints from cargo specs.
+- [x] Query crates.io API to resolve package version constraints.
+- [x] Build the crate using `cargo install --root <cached-cellar-path>` or a manual `cargo build` pipeline.
+- [x] Cache resulting binary in the cellar under a `cargo/` prefix directory.
+- [x] Composing path environment includes the cached binary directory.
 
 ## Technical approach
 

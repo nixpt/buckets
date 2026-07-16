@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use semver::{Version, VersionReq};
+use serde::Deserialize;
 use std::io::BufRead;
 
 use crate::config::Config;
@@ -30,8 +31,51 @@ pub(crate) fn parse_dist_version(ver_str: &str) -> Option<Version> {
     Version::parse(&format!("{}+{}", &caps[1], &caps[2])).ok()
 }
 
+#[derive(Deserialize)]
+struct CargoCrateVersion {
+    num: String,
+    yanked: bool,
+}
+
+#[derive(Deserialize)]
+struct CargoCrateResponse {
+    versions: Vec<CargoCrateVersion>,
+}
+
+fn list_cargo_versions(project: &str) -> Result<Vec<Version>> {
+    let crate_name = project.strip_prefix("cargo:")
+        .context("Missing cargo: prefix")?;
+    let url = format!("https://crates.io/api/v1/crates/{crate_name}");
+    
+    let response = ureq::get(&url)
+        .set("User-Agent", "crush-buckets/0.1.0 (contact@nixpt.dev)")
+        .call()
+        .with_context(|| format!("Failed to fetch cargo versions from {url}"))?;
+        
+    let data: CargoCrateResponse = serde_json::from_reader(response.into_reader())
+        .with_context(|| format!("Failed to parse crates.io response for {crate_name}"))?;
+        
+    let mut versions = Vec::new();
+    for cv in data.versions {
+        if !cv.yanked {
+            if let Ok(v) = Version::parse(&cv.num) {
+                versions.push(v);
+            }
+        }
+    }
+    
+    // Sort newest first
+    versions.sort_by(|a, b| b.cmp(a));
+    versions.dedup();
+    
+    Ok(versions)
+}
+
 /// Fetch the list of available versions for a project from the dist server.
 pub fn list_remote_versions(config: &Config, project: &str) -> Result<Vec<Version>> {
+    if project.starts_with("cargo:") {
+        return list_cargo_versions(project);
+    }
     let url = config.versions_url(project);
     let response = ureq::get(&url)
         .call()
@@ -121,5 +165,14 @@ mod tests {
             config.bottle_url("nodejs.org", "20.11.0"),
             "https://dist.pkgx.dev/nodejs.org/linux/x86-64/v20.11.0.tar.xz"
         );
+    }
+
+    #[test]
+    fn test_list_cargo_versions() {
+        let config = Config::default();
+        let versions = list_remote_versions(&config, "cargo:crush-buckets").unwrap();
+        assert!(!versions.is_empty());
+        let has_v0_1_0 = versions.iter().any(|v| v.major == 0 && v.minor == 1);
+        assert!(has_v0_1_0);
     }
 }
