@@ -23,10 +23,23 @@ mod types;
 mod worktree;
 mod bucketfile;
 mod net;
-mod swarm;
+mod herd;
 
 use config::Config;
 use index::Index;
+
+/// Set by `herd_signal_handler` on SIGINT/SIGTERM; polled by `herd deploy`'s
+/// wait loop. A plain atomic store is async-signal-safe, unlike the
+/// `stdin().read_line()` this replaces (which only ever unblocked on stdin
+/// EOF, not on an actual signal — every non-interactive invocation of
+/// `herd deploy` shut itself down within ~1s of starting, and even in a
+/// real terminal Ctrl-C bypassed this cleanup path entirely via the default
+/// SIGINT action).
+static HERD_STOP_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn herd_signal_handler(_sig: libc::c_int) {
+    HERD_STOP_SIGNAL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
 
 #[derive(Parser)]
 #[command(name = "buckets", version, about = "Throwaway runtime buckets for AI agents")]
@@ -315,26 +328,26 @@ enum Command {
     Net(NetSubcommand),
 
     /// Orchestrate a fleet of bucket replicas — deploy, scale, and health-
-    /// reconcile multiple bucket instances as a named swarm.
+    /// reconcile multiple bucket instances as a named herd.
     ///
     /// Usage:
-    ///   buckets swarm deploy worker --spec node@20 --replicas 5 --net swarm-net -- node worker.js
-    ///   buckets swarm ls
-    ///   buckets swarm status worker
-    ///   buckets swarm scale worker --replicas 8
-    ///   buckets swarm stop worker
+    ///   buckets herd deploy worker --spec node@20 --replicas 5 --net herd-net -- node worker.js
+    ///   buckets herd ls
+    ///   buckets herd status worker
+    ///   buckets herd scale worker --replicas 8
+    ///   buckets herd stop worker
     ///
-    /// Each replica gets SWARM_NAME and SWARM_REPLICA_INDEX env vars so
+    /// Each replica gets HERD_NAME and HERD_REPLICA_INDEX env vars so
     /// application code can self-identify within the fleet.
     #[command(subcommand)]
-    Swarm(SwarmSubcommand),
+    Herd(HerdSubcommand),
 }
 
 #[derive(Subcommand)]
-enum SwarmSubcommand {
-    /// Deploy a named swarm: spawn N bucket replicas with a shared configuration.
+enum HerdSubcommand {
+    /// Deploy a named herd: spawn N bucket replicas with a shared configuration.
     Deploy {
-        /// Name for this swarm (e.g. workers, api-fleet).
+        /// Name for this herd (e.g. workers, api-fleet).
         name: String,
         /// Bucket spec to run (e.g. node@20, python@3.11, local/my-app).
         #[arg(long)]
@@ -359,27 +372,27 @@ enum SwarmSubcommand {
         command: Vec<String>,
     },
 
-    /// List all running swarms.
+    /// List all running herds.
     Ls,
 
-    /// Show the status of each replica in a swarm.
+    /// Show the status of each replica in a herd.
     Status {
-        /// Name of the swarm.
+        /// Name of the herd.
         name: String,
     },
 
-    /// Scale a running swarm to a new replica count.
+    /// Scale a running herd to a new replica count.
     Scale {
-        /// Name of the swarm.
+        /// Name of the herd.
         name: String,
         /// Desired replica count.
         #[arg(long, short = 'n')]
         replicas: u32,
     },
 
-    /// Stop all replicas in a swarm and remove it.
+    /// Stop all replicas in a herd and remove it.
     Stop {
-        /// Name of the swarm.
+        /// Name of the herd.
         name: String,
     },
 }
@@ -584,7 +597,7 @@ fn main() -> Result<()> {
         }
         Command::Session(cmd) => cmd_session(cmd, &config, &index),
         Command::Net(cmd) => cmd_net(cmd, &config),
-        Command::Swarm(cmd) => cmd_swarm(cmd, &config),
+        Command::Herd(cmd) => cmd_herd(cmd, &config),
     }
 }
 
@@ -1328,12 +1341,12 @@ fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {
     }
 }
 
-/// Manage bucket swarms: deploy, scale, and health-reconcile replica fleets.
-fn cmd_swarm(cmd: SwarmSubcommand, config: &Config) -> Result<()> {
-    let swarms_dir = config.cache_dir.join("swarms");
+/// Manage bucket herds: deploy, scale, and health-reconcile replica fleets.
+fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
+    let herds_dir = config.cache_dir.join("herds");
 
     match cmd {
-        SwarmSubcommand::Deploy {
+        HerdSubcommand::Deploy {
             name,
             spec,
             replicas,
@@ -1344,12 +1357,12 @@ fn cmd_swarm(cmd: SwarmSubcommand, config: &Config) -> Result<()> {
             command,
         } => {
             let restart_policy = match restart.as_str() {
-                "always" => swarm::RestartPolicy::Always,
-                "never"  => swarm::RestartPolicy::Never,
-                _        => swarm::RestartPolicy::OnFailure,
+                "always" => herd::RestartPolicy::Always,
+                "never"  => herd::RestartPolicy::Never,
+                _        => herd::RestartPolicy::OnFailure,
             };
 
-            let swarm_spec = swarm::SwarmSpec {
+            let herd_spec = herd::HerdSpec {
                 name: name.clone(),
                 bucket: spec,
                 command,
@@ -1370,7 +1383,7 @@ fn cmd_swarm(cmd: SwarmSubcommand, config: &Config) -> Result<()> {
                     ))?;
             }
 
-            let ctrl = swarm::SwarmController::create(swarm_spec, &swarms_dir)?;
+            let ctrl = herd::HerdController::create(herd_spec, &herds_dir)?;
 
             // Run the reconciler in a background thread; block main on Ctrl-C
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1380,38 +1393,48 @@ fn cmd_swarm(cmd: SwarmSubcommand, config: &Config) -> Result<()> {
                 ctrl.run_reconciler(stop2);
             });
 
-            // Wait for Ctrl-C signal using a simple approach
-            eprintln!("  Swarm running. Press Ctrl-C to stop.");
-            let _ = std::io::stdin().read_line(&mut String::new());
+            // Wait for a real SIGINT/SIGTERM (not stdin EOF — see HERD_STOP_SIGNAL's doc).
+            unsafe {
+                if libc::signal(libc::SIGINT, herd_signal_handler as *const () as usize) == libc::SIG_ERR {
+                    eprintln!("  warning: could not install SIGINT handler for herd deploy");
+                }
+                if libc::signal(libc::SIGTERM, herd_signal_handler as *const () as usize) == libc::SIG_ERR {
+                    eprintln!("  warning: could not install SIGTERM handler for herd deploy");
+                }
+            }
+            eprintln!("  Herd running. Press Ctrl-C to stop.");
+            while !HERD_STOP_SIGNAL.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
 
-            eprintln!("▶ shutting down swarm '{name}'...");
+            eprintln!("▶ shutting down herd '{name}'...");
             let _ = handle.join();
 
             // Stop any surviving processes by reading persisted state
-            let state_path = swarms_dir.join(&name).join("state.json");
+            let state_path = herds_dir.join(&name).join("state.json");
             if let Ok(content) = std::fs::read_to_string(&state_path) {
-                if let Ok(state) = serde_json::from_str::<swarm::SwarmState>(&content) {
+                if let Ok(state) = serde_json::from_str::<herd::HerdState>(&content) {
                     for inst in &state.instances {
                         if let Some(pid) = inst.pid {
                             unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
                         }
                     }
-                    let _ = std::fs::remove_dir_all(swarms_dir.join(&name));
+                    let _ = std::fs::remove_dir_all(herds_dir.join(&name));
                 }
             }
             Ok(())
         }
 
-        SwarmSubcommand::Ls => {
-            let swarms = swarm::list_all(&swarms_dir);
-            if swarms.is_empty() {
-                println!("No active swarms.");
-                println!("  Create one with: buckets swarm deploy <name> --spec <spec> --replicas N -- <cmd>");
+        HerdSubcommand::Ls => {
+            let herds = herd::list_all(&herds_dir);
+            if herds.is_empty() {
+                println!("No active herds.");
+                println!("  Create one with: buckets herd deploy <name> --spec <spec> --replicas N -- <cmd>");
             } else {
                 println!("{:<20} {:<20} {:<8} {}", "NAME", "SPEC", "REPLICAS", "NET");
                 println!("{}", "─".repeat(65));
-                for s in swarms {
+                for s in herds {
                     println!(
                         "{:<20} {:<20} {:<8} {}",
                         s.name, s.bucket, s.replicas,
@@ -1422,17 +1445,17 @@ fn cmd_swarm(cmd: SwarmSubcommand, config: &Config) -> Result<()> {
             Ok(())
         }
 
-        SwarmSubcommand::Status { name } => {
-            let state_path = swarms_dir.join(&name).join("state.json");
+        HerdSubcommand::Status { name } => {
+            let state_path = herds_dir.join(&name).join("state.json");
             if !state_path.exists() {
-                anyhow::bail!("Swarm '{name}' not found — is it running?");
+                anyhow::bail!("Herd '{name}' not found — is it running?");
             }
-            let state: swarm::SwarmState =
+            let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
             let running = state.instances.iter()
-                .filter(|i| i.status == swarm::InstanceStatus::Running)
+                .filter(|i| i.status == herd::InstanceStatus::Running)
                 .count();
-            println!("Swarm:    {}", state.spec.name);
+            println!("Herd:    {}", state.spec.name);
             println!("Spec:     {}", state.spec.bucket);
             println!("Replicas: {}/{}", running, state.spec.replicas);
             if let Some(ref net) = state.spec.net {
@@ -1453,33 +1476,33 @@ fn cmd_swarm(cmd: SwarmSubcommand, config: &Config) -> Result<()> {
             Ok(())
         }
 
-        SwarmSubcommand::Scale { name, replicas: _ } => {
-            let state_path = swarms_dir.join(&name).join("state.json");
+        HerdSubcommand::Scale { name, replicas: _ } => {
+            let state_path = herds_dir.join(&name).join("state.json");
             if !state_path.exists() {
-                anyhow::bail!("Swarm '{name}' not found");
+                anyhow::bail!("Herd '{name}' not found");
             }
-            eprintln!("⚠ Live hot-scale requires the swarm's controlling process.");
+            eprintln!("⚠ Live hot-scale requires the herd's controlling process.");
             eprintln!("  Stop and re-deploy with the new --replicas value for now.");
             eprintln!("  (IPC-based hot-scale is planned for a future release)");
             Ok(())
         }
 
-        SwarmSubcommand::Stop { name } => {
-            let state_path = swarms_dir.join(&name).join("state.json");
+        HerdSubcommand::Stop { name } => {
+            let state_path = herds_dir.join(&name).join("state.json");
             if !state_path.exists() {
-                anyhow::bail!("Swarm '{name}' not found");
+                anyhow::bail!("Herd '{name}' not found");
             }
-            let state: swarm::SwarmState =
+            let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
-            eprintln!("▶ stopping swarm '{name}'");
+            eprintln!("▶ stopping herd '{name}'");
             for inst in &state.instances {
                 if let Some(pid) = inst.pid {
                     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
                     eprintln!("  ✓ replica {} (PID {pid}) terminated", inst.index);
                 }
             }
-            std::fs::remove_dir_all(swarms_dir.join(&name))?;
-            eprintln!("✓ swarm '{name}' stopped");
+            std::fs::remove_dir_all(herds_dir.join(&name))?;
+            eprintln!("✓ herd '{name}' stopped");
             Ok(())
         }
     }

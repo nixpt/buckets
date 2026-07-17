@@ -39,4 +39,5 @@ Ensure concurrent performance and resource sharing for parallel fleet agents.
 
 - [x] **BUCKETS-6** (M): **Cellar Cache Locking** — Optimize multi-agent write locks to prevent corrupted/concurrent extractions in the shared cache.
 - [x] **BUCKETS-7** (S): **CLI Diagnostic Cleanups** — Polish error outputs when remote connections fail or index versions are not found.
+- [x] **BUCKETS-11** (L): **buck-herd** — mandala-pattern fleet orchestration (`buckets herd deploy/ls/status/scale/stop`), health polling + exponential-backoff auto-restart. Shipped directly to master without the normal branch/ticket/review flow (antigravity); retroactively ticketed + fixed a real bug where `herd deploy`'s wait-for-Ctrl-C was `stdin().read_line()` instead of a signal handler, so any non-interactive invocation shut the fleet down within ~1s. See `tickets/BUCKETS-11-buck-herd.md`.  _(kai, 2026-07-17)_
 - [ ] **gap** — buck-net's expose_port (socat/nsenter host<->namespace port forwarding) has zero live-test coverage — only pid_alive/list_all bookkeeping is unit-tested. Worth a live-test pass before relying on it.  _(cece-buckets, 2026-07-16)_

@@ -35,7 +35,7 @@ pub mod types;
 pub mod worktree;
 pub mod bucketfile;
 pub mod net;
-pub mod swarm;
+pub mod herd;
 
 pub use config::Config;
 pub use index::Index;

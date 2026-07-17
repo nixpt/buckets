@@ -1,4 +1,4 @@
-//! Buck-swarm: replica management and health reconciliation for bucket fleets.
+//! Buck-herd: replica management and health reconciliation for bucket fleets.
 //!
 //! Implements the same desired-state reconciliation pattern as mandala's
 //! [`ReconciliationLoop`](https://github.com/nixpt/mandala) but entirely
@@ -10,26 +10,26 @@
 //!
 //! ```bash
 //! # Deploy 5 node@20 workers sharing a virtual network
-//! buckets net create swarm-net
-//! buckets swarm deploy worker --spec node@20 --replicas 5 --net swarm-net -- node worker.js
+//! buckets net create herd-net
+//! buckets herd deploy worker --spec node@20 --replicas 5 --net herd-net -- node worker.js
 //!
 //! # Inspect the fleet
-//! buckets swarm ls
-//! buckets swarm status worker
+//! buckets herd ls
+//! buckets herd status worker
 //!
 //! # Scale up/down live
-//! buckets swarm scale worker --replicas 8
+//! buckets herd scale worker --replicas 8
 //!
 //! # Tear down
-//! buckets swarm stop worker
+//! buckets herd stop worker
 //! ```
 //!
 //! ## State
 //!
-//! Swarm state is persisted to `cache_dir/swarms/{name}/state.json`. The
+//! Herd state is persisted to `cache_dir/herds/{name}/state.json`. The
 //! reconciliation thread reads this file so it survives config changes. When
-//! the process that ran `buckets swarm deploy` exits, the background
-//! reconciler stops — swarms are session-scoped unless wrapped in a supervisor
+//! the process that ran `buckets herd deploy` exits, the background
+//! reconciler stops — herds are session-scoped unless wrapped in a supervisor
 //! (systemd, tmux, etc.).
 
 use anyhow::{bail, Context, Result};
@@ -43,9 +43,9 @@ use std::time::{Duration, Instant};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-/// Desired configuration for a named swarm.
+/// Desired configuration for a named herd.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SwarmSpec {
+pub struct HerdSpec {
     pub name: String,
     /// Bucket spec string: "node@20", "python@3.11", "local/my-app"
     pub bucket: String,
@@ -99,25 +99,25 @@ pub enum InstanceStatus {
     Stopped,
 }
 
-/// Persisted swarm state.
+/// Persisted herd state.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SwarmState {
-    pub spec: SwarmSpec,
+pub struct HerdState {
+    pub spec: HerdSpec,
     pub instances: Vec<InstanceState>,
 }
 
-// ── SwarmController ───────────────────────────────────────────────────────────
+// ── HerdController ───────────────────────────────────────────────────────────
 
-/// Runtime controller for a named swarm. Holds the live child processes and
+/// Runtime controller for a named herd. Holds the live child processes and
 /// runs a background reconciliation thread.
-pub struct SwarmController {
+pub struct HerdController {
     pub name: String,
     state: Arc<Mutex<InternalState>>,
     state_dir: PathBuf,
 }
 
 struct InternalState {
-    spec: SwarmSpec,
+    spec: HerdSpec,
     /// Live child handles indexed by replica index
     children: HashMap<u32, ChildEntry>,
 }
@@ -136,13 +136,13 @@ impl ChildEntry {
     }
 }
 
-impl SwarmController {
-    /// Create a new swarm: spawn all replicas and start the reconciler.
-    pub fn create(spec: SwarmSpec, swarms_dir: &Path) -> Result<Self> {
-        let state_dir = swarms_dir.join(&spec.name);
+impl HerdController {
+    /// Create a new herd: spawn all replicas and start the reconciler.
+    pub fn create(spec: HerdSpec, herds_dir: &Path) -> Result<Self> {
+        let state_dir = herds_dir.join(&spec.name);
         if state_dir.exists() {
             bail!(
-                "Swarm '{}' already exists — stop it first with 'buckets swarm stop {}'",
+                "Herd '{}' already exists — stop it first with 'buckets herd stop {}'",
                 spec.name, spec.name
             );
         }
@@ -151,7 +151,7 @@ impl SwarmController {
         if let Some(ref net) = spec.net {
             let net_ns = format!("/proc");
             let _ = net_ns; // checked at spawn time via load
-            eprintln!("▶ swarm '{}' will use buck-net '{}'", spec.name, net);
+            eprintln!("▶ herd '{}' will use buck-net '{}'", spec.name, net);
         }
 
         fs::create_dir_all(&state_dir)?;
@@ -161,7 +161,7 @@ impl SwarmController {
             children: HashMap::new(),
         }));
 
-        let ctrl = SwarmController {
+        let ctrl = HerdController {
             name: spec.name.clone(),
             state: state.clone(),
             state_dir: state_dir.clone(),
@@ -195,11 +195,11 @@ impl SwarmController {
 
         ctrl.persist_state()?;
 
-        eprintln!("✓ swarm '{}' running ({} replicas)", spec.name, spec.replicas);
+        eprintln!("✓ herd '{}' running ({} replicas)", spec.name, spec.replicas);
         Ok(ctrl)
     }
 
-    /// Get a snapshot of current swarm state for display.
+    /// Get a snapshot of current herd state for display.
     pub fn snapshot(&self) -> Vec<InstanceState> {
         let mut s = self.state.lock().unwrap();
         let spec = s.spec.clone();
@@ -236,7 +236,7 @@ impl SwarmController {
     /// Run the reconciliation loop on the calling thread (blocks until stopped).
     /// Call this in a background thread.
     pub fn run_reconciler(&self, stop_signal: Arc<std::sync::atomic::AtomicBool>) {
-        eprintln!("▶ reconciler for swarm '{}' started", self.name);
+        eprintln!("▶ reconciler for herd '{}' started", self.name);
 
         loop {
             if stop_signal.load(std::sync::atomic::Ordering::SeqCst) {
@@ -257,7 +257,7 @@ impl SwarmController {
             let _ = self.persist_state();
         }
 
-        eprintln!("▶ reconciler for swarm '{}' stopped", self.name);
+        eprintln!("▶ reconciler for herd '{}' stopped", self.name);
     }
 
     fn reconcile_tick(&self) {
@@ -265,7 +265,7 @@ impl SwarmController {
         let desired = s.spec.replicas;
         let policy = s.spec.restart;
         let max_restarts = s.spec.max_restarts;
-        let swarm_name = s.spec.name.clone(); // Clone up-front to avoid borrow conflicts
+        let herd_name = s.spec.name.clone(); // Clone up-front to avoid borrow conflicts
 
         let indices: Vec<u32> = (0..desired).collect();
         for idx in indices {
@@ -283,9 +283,9 @@ impl SwarmController {
                                     status: InstanceStatus::Running,
                                     failed_at: None,
                                 });
-                                eprintln!("  ↺ swarm '{swarm_name}' replica {idx}: spawned");
+                                eprintln!("  ↺ herd '{herd_name}' replica {idx}: spawned");
                             }
-                            Err(e) => eprintln!("  ✗ swarm '{swarm_name}' replica {idx}: spawn failed: {e}"),
+                            Err(e) => eprintln!("  ✗ herd '{herd_name}' replica {idx}: spawn failed: {e}"),
                         }
                     }
                 }
@@ -309,7 +309,7 @@ impl SwarmController {
                     if !should_restart || entry.restart_count >= max_restarts {
                         let restart_count = entry.restart_count;
                         eprintln!(
-                            "  ✗ swarm '{swarm_name}' replica {idx}: permanently failed (restarts: {restart_count})"
+                            "  ✗ herd '{herd_name}' replica {idx}: permanently failed (restarts: {restart_count})"
                         );
                         entry.status = InstanceStatus::Failed;
                         entry.failed_at = Some(Instant::now());
@@ -324,7 +324,7 @@ impl SwarmController {
                     entry.status = InstanceStatus::Restarting;
 
                     eprintln!(
-                        "  ↺ swarm '{swarm_name}' replica {idx}: restarting (attempt {restart_count}, backoff {backoff_secs}s)"
+                        "  ↺ herd '{herd_name}' replica {idx}: restarting (attempt {restart_count}, backoff {backoff_secs}s)"
                     );
 
                     // Drop the mutex lock to sleep (can't hold lock across sleep)
@@ -340,7 +340,7 @@ impl SwarmController {
                             }
                         }
                         Err(err) => {
-                            eprintln!("  ✗ swarm '{swarm_name}' replica {idx}: restart failed: {err}");
+                            eprintln!("  ✗ herd '{herd_name}' replica {idx}: restart failed: {err}");
                         }
                     }
                 }
@@ -348,7 +348,7 @@ impl SwarmController {
         }
     }
 
-    /// Scale the swarm to a new replica count.
+    /// Scale the herd to a new replica count.
     pub fn scale(&self, new_replicas: u32) -> Result<()> {
         let mut s = self.state.lock().unwrap();
         let current = s.spec.replicas;
@@ -387,7 +387,7 @@ impl SwarmController {
 
     /// Stop all replicas and clean up.
     pub fn stop(self) -> Result<()> {
-        eprintln!("▶ stopping swarm '{}'", self.name);
+        eprintln!("▶ stopping herd '{}'", self.name);
         let mut s = self.state.lock().unwrap();
         for (idx, mut entry) in s.children.drain() {
             let _ = entry.child.kill();
@@ -396,7 +396,7 @@ impl SwarmController {
         }
         drop(s);
         let _ = fs::remove_dir_all(&self.state_dir);
-        eprintln!("✓ swarm '{}' stopped", self.name);
+        eprintln!("✓ herd '{}' stopped", self.name);
         Ok(())
     }
 
@@ -417,18 +417,18 @@ impl SwarmController {
                 })
             })
             .collect();
-        let state = SwarmState { spec: s.spec.clone(), instances };
+        let state = HerdState { spec: s.spec.clone(), instances };
         drop(s);
         fs::write(
             self.state_dir.join("state.json"),
             serde_json::to_string_pretty(&state)?,
-        ).context("Failed to persist swarm state")
+        ).context("Failed to persist herd state")
     }
 }
 
 // ── Spawn helper ──────────────────────────────────────────────────────────────
 
-fn spawn_replica(spec: &SwarmSpec, idx: u32) -> Result<Child> {
+fn spawn_replica(spec: &HerdSpec, idx: u32) -> Result<Child> {
     let mut cmd = Command::new("buckets");
     cmd.arg("run");
 
@@ -448,23 +448,23 @@ fn spawn_replica(spec: &SwarmSpec, idx: u32) -> Result<Child> {
     }
 
     // Tag replica index in environment for apps that want it
-    cmd.env("SWARM_REPLICA_INDEX", idx.to_string());
-    cmd.env("SWARM_NAME", &spec.name);
+    cmd.env("HERD_REPLICA_INDEX", idx.to_string());
+    cmd.env("HERD_NAME", &spec.name);
 
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
     cmd.stdin(Stdio::null());
 
     cmd.spawn().with_context(|| {
-        format!("Failed to spawn replica {idx} of swarm '{}' (buckets run {} ...)", spec.name, spec.bucket)
+        format!("Failed to spawn replica {idx} of herd '{}' (buckets run {} ...)", spec.name, spec.bucket)
     })
 }
 
 // ── Listing helpers ───────────────────────────────────────────────────────────
 
-/// Info about a persisted swarm (from state.json, no live process check).
+/// Info about a persisted herd (from state.json, no live process check).
 #[derive(Debug)]
-pub struct SwarmInfo {
+pub struct HerdInfo {
     pub name: String,
     pub bucket: String,
     pub replicas: u32,
@@ -472,17 +472,17 @@ pub struct SwarmInfo {
     pub instances: Vec<InstanceState>,
 }
 
-/// List all persisted swarms under `swarms_dir`.
-pub fn list_all(swarms_dir: &Path) -> Vec<SwarmInfo> {
-    if !swarms_dir.exists() { return vec![]; }
-    let Ok(entries) = fs::read_dir(swarms_dir) else { return vec![] };
+/// List all persisted herds under `herds_dir`.
+pub fn list_all(herds_dir: &Path) -> Vec<HerdInfo> {
+    if !herds_dir.exists() { return vec![]; }
+    let Ok(entries) = fs::read_dir(herds_dir) else { return vec![] };
     let mut result = Vec::new();
     for entry in entries.flatten() {
         if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
         let state_path = entry.path().join("state.json");
         let Ok(content) = fs::read_to_string(&state_path) else { continue };
-        let Ok(state) = serde_json::from_str::<SwarmState>(&content) else { continue };
-        result.push(SwarmInfo {
+        let Ok(state) = serde_json::from_str::<HerdState>(&content) else { continue };
+        result.push(HerdInfo {
             name: state.spec.name.clone(),
             bucket: state.spec.bucket.clone(),
             replicas: state.spec.replicas,
@@ -498,8 +498,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn swarm_spec_defaults() {
-        let spec = serde_json::from_str::<SwarmSpec>(r#"{
+    fn herd_spec_defaults() {
+        let spec = serde_json::from_str::<HerdSpec>(r#"{
             "name": "test",
             "bucket": "node@20",
             "command": [],
@@ -515,6 +515,6 @@ mod tests {
     #[test]
     fn list_all_empty_for_missing_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(list_all(&dir.path().join("swarms")).is_empty());
+        assert!(list_all(&dir.path().join("herds")).is_empty());
     }
 }
