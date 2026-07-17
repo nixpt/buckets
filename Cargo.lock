@@ -163,6 +163,7 @@ dependencies = [
  "anyhow",
  "clap",
  "fd-lock",
+ "libc",
  "regex",
  "semver",
  "serde",

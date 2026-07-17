@@ -23,6 +23,7 @@ mod types;
 mod worktree;
 mod bucketfile;
 mod net;
+mod swarm;
 
 use config::Config;
 use index::Index;
@@ -312,7 +313,77 @@ enum Command {
     /// can talk to each other at 127.0.0.1 without any host network access.
     #[command(subcommand)]
     Net(NetSubcommand),
+
+    /// Orchestrate a fleet of bucket replicas — deploy, scale, and health-
+    /// reconcile multiple bucket instances as a named swarm.
+    ///
+    /// Usage:
+    ///   buckets swarm deploy worker --spec node@20 --replicas 5 --net swarm-net -- node worker.js
+    ///   buckets swarm ls
+    ///   buckets swarm status worker
+    ///   buckets swarm scale worker --replicas 8
+    ///   buckets swarm stop worker
+    ///
+    /// Each replica gets SWARM_NAME and SWARM_REPLICA_INDEX env vars so
+    /// application code can self-identify within the fleet.
+    #[command(subcommand)]
+    Swarm(SwarmSubcommand),
 }
+
+#[derive(Subcommand)]
+enum SwarmSubcommand {
+    /// Deploy a named swarm: spawn N bucket replicas with a shared configuration.
+    Deploy {
+        /// Name for this swarm (e.g. workers, api-fleet).
+        name: String,
+        /// Bucket spec to run (e.g. node@20, python@3.11, local/my-app).
+        #[arg(long)]
+        spec: String,
+        /// Number of replicas to run.
+        #[arg(long, short = 'n', default_value_t = 1)]
+        replicas: u32,
+        /// Join a named buck-net virtual network (all replicas share it).
+        #[arg(long)]
+        net: Option<String>,
+        /// Restart policy: on_failure (default), always, never.
+        #[arg(long, default_value = "on_failure")]
+        restart: String,
+        /// Maximum restart attempts per replica before giving up.
+        #[arg(long, default_value_t = 10)]
+        max_restarts: u32,
+        /// Health check interval in seconds.
+        #[arg(long, default_value_t = 5)]
+        check_interval: u64,
+        /// Command to run inside each bucket.
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+
+    /// List all running swarms.
+    Ls,
+
+    /// Show the status of each replica in a swarm.
+    Status {
+        /// Name of the swarm.
+        name: String,
+    },
+
+    /// Scale a running swarm to a new replica count.
+    Scale {
+        /// Name of the swarm.
+        name: String,
+        /// Desired replica count.
+        #[arg(long, short = 'n')]
+        replicas: u32,
+    },
+
+    /// Stop all replicas in a swarm and remove it.
+    Stop {
+        /// Name of the swarm.
+        name: String,
+    },
+}
+
 
 #[derive(Subcommand)]
 enum NetSubcommand {
@@ -513,6 +584,7 @@ fn main() -> Result<()> {
         }
         Command::Session(cmd) => cmd_session(cmd, &config, &index),
         Command::Net(cmd) => cmd_net(cmd, &config),
+        Command::Swarm(cmd) => cmd_swarm(cmd, &config),
     }
 }
 
@@ -696,11 +768,9 @@ fn parse_port_mapping(s: &str) -> Result<(u16, u16)> {
     Ok((host_port, bucket_port))
 }
 
-
-/// Open an interactive shell with the runtime in PATH, sandboxed via
-/// `bwrap` unless `no_sandbox` is set (see `sandbox.rs`).
 fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
     if specs.is_empty() {
+
         anyhow::bail!("At least one spec is required (e.g. 'node@20')");
     }
 
@@ -1253,6 +1323,163 @@ fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {
         }
         WorktreeCommand::List { repo } => {
             print!("{}", worktree::list(Path::new(&repo))?);
+            Ok(())
+        }
+    }
+}
+
+/// Manage bucket swarms: deploy, scale, and health-reconcile replica fleets.
+fn cmd_swarm(cmd: SwarmSubcommand, config: &Config) -> Result<()> {
+    let swarms_dir = config.cache_dir.join("swarms");
+
+    match cmd {
+        SwarmSubcommand::Deploy {
+            name,
+            spec,
+            replicas,
+            net,
+            restart,
+            max_restarts,
+            check_interval,
+            command,
+        } => {
+            let restart_policy = match restart.as_str() {
+                "always" => swarm::RestartPolicy::Always,
+                "never"  => swarm::RestartPolicy::Never,
+                _        => swarm::RestartPolicy::OnFailure,
+            };
+
+            let swarm_spec = swarm::SwarmSpec {
+                name: name.clone(),
+                bucket: spec,
+                command,
+                env: std::collections::HashMap::new(),
+                replicas,
+                net: net.clone(),
+                check_interval_secs: check_interval,
+                restart: restart_policy,
+                max_restarts,
+            };
+
+            // Verify buck-net exists before spawning
+            if let Some(ref net_name) = net {
+                let nets_dir = config.cache_dir.join("nets");
+                net::NetSession::load(net_name, &nets_dir)
+                    .with_context(|| format!(
+                        "Buck-net '{net_name}' not found — create it first with: buckets net create {net_name}"
+                    ))?;
+            }
+
+            let ctrl = swarm::SwarmController::create(swarm_spec, &swarms_dir)?;
+
+            // Run the reconciler in a background thread; block main on Ctrl-C
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop2 = stop.clone();
+
+            let handle = std::thread::spawn(move || {
+                ctrl.run_reconciler(stop2);
+            });
+
+            // Wait for Ctrl-C signal using a simple approach
+            eprintln!("  Swarm running. Press Ctrl-C to stop.");
+            let _ = std::io::stdin().read_line(&mut String::new());
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+
+            eprintln!("▶ shutting down swarm '{name}'...");
+            let _ = handle.join();
+
+            // Stop any surviving processes by reading persisted state
+            let state_path = swarms_dir.join(&name).join("state.json");
+            if let Ok(content) = std::fs::read_to_string(&state_path) {
+                if let Ok(state) = serde_json::from_str::<swarm::SwarmState>(&content) {
+                    for inst in &state.instances {
+                        if let Some(pid) = inst.pid {
+                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(swarms_dir.join(&name));
+                }
+            }
+            Ok(())
+        }
+
+        SwarmSubcommand::Ls => {
+            let swarms = swarm::list_all(&swarms_dir);
+            if swarms.is_empty() {
+                println!("No active swarms.");
+                println!("  Create one with: buckets swarm deploy <name> --spec <spec> --replicas N -- <cmd>");
+            } else {
+                println!("{:<20} {:<20} {:<8} {}", "NAME", "SPEC", "REPLICAS", "NET");
+                println!("{}", "─".repeat(65));
+                for s in swarms {
+                    println!(
+                        "{:<20} {:<20} {:<8} {}",
+                        s.name, s.bucket, s.replicas,
+                        s.net.as_deref().unwrap_or("—")
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        SwarmSubcommand::Status { name } => {
+            let state_path = swarms_dir.join(&name).join("state.json");
+            if !state_path.exists() {
+                anyhow::bail!("Swarm '{name}' not found — is it running?");
+            }
+            let state: swarm::SwarmState =
+                serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
+            let running = state.instances.iter()
+                .filter(|i| i.status == swarm::InstanceStatus::Running)
+                .count();
+            println!("Swarm:    {}", state.spec.name);
+            println!("Spec:     {}", state.spec.bucket);
+            println!("Replicas: {}/{}", running, state.spec.replicas);
+            if let Some(ref net) = state.spec.net {
+                println!("Network:  {net}");
+            }
+            println!();
+            println!("{:<6} {:<10} {:<12} {}", "IDX", "PID", "STATUS", "RESTARTS");
+            println!("{}", "─".repeat(45));
+            for inst in &state.instances {
+                println!(
+                    "{:<6} {:<10} {:<12} {}",
+                    inst.index,
+                    inst.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
+                    format!("{:?}", inst.status).to_lowercase(),
+                    inst.restart_count,
+                );
+            }
+            Ok(())
+        }
+
+        SwarmSubcommand::Scale { name, replicas: _ } => {
+            let state_path = swarms_dir.join(&name).join("state.json");
+            if !state_path.exists() {
+                anyhow::bail!("Swarm '{name}' not found");
+            }
+            eprintln!("⚠ Live hot-scale requires the swarm's controlling process.");
+            eprintln!("  Stop and re-deploy with the new --replicas value for now.");
+            eprintln!("  (IPC-based hot-scale is planned for a future release)");
+            Ok(())
+        }
+
+        SwarmSubcommand::Stop { name } => {
+            let state_path = swarms_dir.join(&name).join("state.json");
+            if !state_path.exists() {
+                anyhow::bail!("Swarm '{name}' not found");
+            }
+            let state: swarm::SwarmState =
+                serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
+            eprintln!("▶ stopping swarm '{name}'");
+            for inst in &state.instances {
+                if let Some(pid) = inst.pid {
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+                    eprintln!("  ✓ replica {} (PID {pid}) terminated", inst.index);
+                }
+            }
+            std::fs::remove_dir_all(swarms_dir.join(&name))?;
+            eprintln!("✓ swarm '{name}' stopped");
             Ok(())
         }
     }
