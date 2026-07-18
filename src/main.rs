@@ -152,6 +152,43 @@ enum Command {
     /// List cached installations.
     List,
 
+    /// Remove cached installations to reclaim disk space.
+    ///
+    /// The cache under $BUCKETS_CACHE_DIR only grows over time (by design —
+    /// it's what makes the shared-cache concurrency model work); this is
+    /// how you reclaim it.
+    ///
+    /// Usage:
+    ///   buckets clean node@18                 # remove one version
+    ///   buckets clean node                    # remove all versions of a project
+    ///   buckets clean --all                   # remove the entire cache
+    ///   buckets clean --all --older-than 30d  # ...only entries older than 30 days
+    ///   buckets clean --all --dry-run         # preview without deleting
+    Clean {
+        /// Project (and optional @version) to remove, e.g. "node" or "node@18".
+        /// Mutually exclusive with --all.
+        spec: Option<String>,
+
+        /// Remove the entire cache (or everything matching --older-than)
+        /// instead of a single project. Required when no spec is given —
+        /// a bare `buckets clean` with no target is refused rather than
+        /// silently wiping a cache other agents may share.
+        #[arg(long)]
+        all: bool,
+
+        /// Only remove entries whose version directory is older than this
+        /// duration, e.g. "30d" (days) or "12h" (hours). Age is the
+        /// directory's filesystem mtime (set at install time) — not a
+        /// tracked last-used timestamp, since buckets doesn't record
+        /// per-use access times today.
+        #[arg(long)]
+        older_than: Option<String>,
+
+        /// Show what would be removed without actually removing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Clone (if a git URL) or use (if a local path) a source repo, detect
     /// its build system, resolve the toolchain it needs, and build it in a
     /// sandboxed bucket — without touching the host.
@@ -585,6 +622,9 @@ fn main() -> Result<()> {
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
         Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
+        Command::Clean { spec, all, older_than, dry_run } => {
+            cmd_clean(&config, spec.as_deref(), all, older_than.as_deref(), dry_run)
+        }
         Command::Build { path_or_url, bucketfile, tag, test, run, no_sandbox } => {
             cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, &config, &index)
         }
@@ -919,6 +959,200 @@ fn cmd_list(config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Remove cached installations to reclaim disk space (see `Command::Clean`
+/// doc comment for the usage shapes).
+fn cmd_clean(config: &Config, spec: Option<&str>, all: bool, older_than: Option<&str>, dry_run: bool) -> Result<()> {
+    if spec.is_some() && all {
+        anyhow::bail!("--all and a spec are mutually exclusive — pass one or the other");
+    }
+    if spec.is_none() && !all {
+        anyhow::bail!(
+            "refusing to clean with no target — pass a spec (e.g. `buckets clean node@18`) \
+             or --all to clean the whole cache. A bare `buckets clean` isn't the default \
+             because $BUCKETS_CACHE_DIR is often shared across concurrent agents."
+        );
+    }
+
+    let max_age = older_than.map(parse_duration).transpose()?;
+
+    let cache_dir = &config.cache_dir;
+    if !cache_dir.exists() {
+        println!("No cached installations (cache dir: {}).", cache_dir.display());
+        return Ok(());
+    }
+
+    let (target_project, target_version) = match spec {
+        Some(s) => {
+            let mut parts = s.splitn(2, '@');
+            let project = parts.next().unwrap_or(s).to_string();
+            let version = parts.next().map(|v| v.to_string());
+            (Some(project), version)
+        }
+        None => (None, None),
+    };
+    if let Some(want) = &target_project {
+        if !config.project_dir(want).exists() {
+            anyhow::bail!("no cached installations found for project '{want}'");
+        }
+    }
+
+    // (project, version string, path, size in bytes)
+    let mut candidates: Vec<(String, String, std::path::PathBuf, u64)> = Vec::new();
+
+    for entry in std::fs::read_dir(cache_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let project = entry.file_name().to_string_lossy().to_string();
+        if project.starts_with('.') {
+            continue;
+        }
+        if let Some(want) = &target_project {
+            if &project != want {
+                continue;
+            }
+        }
+
+        for version in cellar::list_installed(config, &project) {
+            let ver_str = types::dist_version_string(&version);
+            if let Some(want_ver) = &target_version {
+                if want_ver != &ver_str {
+                    continue;
+                }
+            }
+
+            let path = config.version_dir(&project, &ver_str);
+            if let Some(max_age) = max_age {
+                let mtime = std::fs::metadata(&path)?.modified()?;
+                let age = std::time::SystemTime::now().duration_since(mtime).unwrap_or_default();
+                if age < max_age {
+                    continue;
+                }
+            }
+
+            let size = dir_size(&path).unwrap_or(0);
+            candidates.push((project.clone(), ver_str, path, size));
+        }
+    }
+
+    if candidates.is_empty() {
+        println!("Nothing to clean{}.", older_than.map(|d| format!(" older than {d}")).unwrap_or_default());
+        return Ok(());
+    }
+
+    let total: u64 = candidates.iter().map(|(_, _, _, s)| *s).sum();
+    let verb = if dry_run { "Would remove" } else { "Removing" };
+    for (project, ver, path, size) in &candidates {
+        println!("  {verb} {project}@{ver}  ({})  {}", human_size(*size), path.display());
+    }
+    println!("{verb} {} total across {} version(s).", human_size(total), candidates.len());
+
+    if dry_run {
+        return Ok(());
+    }
+
+    let mut touched_projects: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (project, _, path, _) in &candidates {
+        std::fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))?;
+        touched_projects.insert(project.clone());
+    }
+
+    // Repair or remove the project dir's v*/v<major>/v<major.minor> symlinks
+    // now that some version dirs are gone — otherwise they dangle.
+    for project in touched_projects {
+        let remaining = cellar::list_installed(config, &project);
+        if let Some(newest) = remaining.first() {
+            cellar::update_version_symlinks(config, &project, newest)?;
+            // update_version_symlinks only refreshes v*/v<major>/v<major.minor>
+            // aliases for majors that still HAVE a version — it doesn't sweep
+            // aliases for a major/minor line that was removed entirely (e.g.
+            // deleting the only v20.x leaves `v20`/`v20.20` pointing at
+            // nothing). Sweep those explicitly.
+            remove_dangling_symlinks(&config.project_dir(&project))?;
+        } else {
+            let _ = std::fs::remove_dir_all(config.project_dir(&project));
+        }
+    }
+
+    Ok(())
+}
+
+/// Remove any symlinks directly under `dir` whose target no longer exists.
+fn remove_dangling_symlinks(dir: &Path) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_symlink() && !path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// Recursively sum file sizes under `path` (skips symlinks — they don't own
+/// the bytes they point at).
+fn dir_size(path: &Path) -> Result<u64> {
+    if path.is_symlink() {
+        return Ok(0);
+    }
+    if path.is_file() {
+        return Ok(path.metadata()?.len());
+    }
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let p = entry.path();
+        if p.is_symlink() {
+            continue;
+        } else if p.is_dir() {
+            total += dir_size(&p)?;
+        } else {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
+/// Human-readable byte size (B/K/M/G/T), matching common `du -h` shape.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes}B")
+    } else {
+        format!("{size:.1}{}", UNITS[unit])
+    }
+}
+
+/// Parse a simple duration string like "30d" (days), "12h" (hours), or "2w"
+/// (weeks) into a [`std::time::Duration`].
+fn parse_duration(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        anyhow::bail!("empty --older-than value — expected e.g. '30d', '12h', '2w'");
+    }
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let num: u64 = num_str
+        .parse()
+        .with_context(|| format!("invalid --older-than value '{s}' — expected e.g. '30d', '12h', '2w'"))?;
+    let secs = match unit {
+        "h" => num * 3600,
+        "d" => num * 86400,
+        "w" => num * 86400 * 7,
+        _ => anyhow::bail!("invalid --older-than unit '{unit}' in '{s}' — use h (hours), d (days), or w (weeks)"),
+    };
+    Ok(std::time::Duration::from_secs(secs))
 }
 
 /// Clone/use a source repo, detect its build system, resolve the toolchain

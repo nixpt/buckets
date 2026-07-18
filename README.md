@@ -40,7 +40,7 @@ redundantly download the same bottle. Safe under concurrency — see
 ```bash
 # Run one-off commands
 buckets run node@20 -- script.js --flag arg
-buckets run python@3.11 -- -c "print('hello from a bucket')"
+buckets run python@3.11 -- python3 -c "print('hello from a bucket')"
 buckets run rust@latest -- rustc --version
 
 # Multi-package environments
