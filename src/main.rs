@@ -1666,12 +1666,26 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                 println!("No active herds.");
                 println!("  Create one with: buckets herd deploy <name> --spec <spec> --replicas N -- <cmd>");
             } else {
-                println!("{:<20} {:<20} {:<8} {}", "NAME", "SPEC", "REPLICAS", "NET");
-                println!("{}", "─".repeat(65));
+                println!(
+                    "{:<20} {:<20} {:<8} {:<14} {}",
+                    "NAME", "SPEC", "REPLICAS", "RUNNING/FAIL", "NET"
+                );
+                println!("{}", "─".repeat(80));
                 for s in herds {
+                    let running = s
+                        .instances
+                        .iter()
+                        .filter(|i| i.status == herd::InstanceStatus::Running)
+                        .count();
+                    let failed = s
+                        .instances
+                        .iter()
+                        .filter(|i| i.status == herd::InstanceStatus::Failed)
+                        .count();
+                    let health = format!("{}/{}", running, failed);
                     println!(
-                        "{:<20} {:<20} {:<8} {}",
-                        s.name, s.bucket, s.replicas,
+                        "{:<20} {:<20} {:<8} {:<14} {}",
+                        s.name, s.bucket, s.replicas, health,
                         s.net.as_deref().unwrap_or("—")
                     );
                 }

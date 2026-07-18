@@ -24,7 +24,7 @@
 
 ## Active work
 
-Current focus is on M2 (Sandbox Portability via PRoot Fallback) to allow execution on Android/Termux and hardened kernels where bwrap fails. The next milestones target Cargo spec resolution (M3) and parallel cellar cache lock optimizations (M4).
+Current focus is on M4 (Fleet Concurrency) — herd shipped, `buckets clean` shipped. BUCKETS-12 filed to address HerdController dead-code (in-process API unwired due to cross-process CLI design). Next open: BUCKETS-3 (Android/Termux PRoot verification).
 
 ---
 
@@ -39,11 +39,11 @@ _None known._
 | Metric | Value |
 |--------|--------|
 | Total crates | 1 (Standalone binary + library) |
-| Tests passed | **174** (85 lib tests + 89 binary tests) |
+| Tests passed | **188** (85 lib tests + 89 binary tests + 14 herd tests) |
 | Tests failed | 0 |
 | Tests ignored | 0 |
-| Warnings | 0 |
-| Composed features | CLI running, bwrap sandboxing, Xvfb GUI, surfer Site browser, Git worktree |
+| Warnings | 0 (BUCKETS-12: `#[allow(dead_code)]` on in-process API methods — see ticket) |
+| Composed features | CLI running, bwrap sandboxing, Xvfb GUI, surfer Site browser, Git worktree, herd, clean |
 | Cache location | `~/.cache/squadron-buckets` |
 | Build time (from clean) | ~15s (debug) |
 | Release binary size | ~1.5MB (stripped + LTO) |
@@ -53,7 +53,9 @@ _None known._
 
 ## Next 3 (from TASKS.md, priority order)
 
-1. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
+1. **BUCKETS-12 (HerdController dead-code)**: Wire or mark `snapshot`/`scale`/`stop` as in-process API. BUCKETS-12 ticket filed.
+2. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
+3. **buck-net expose_port live-test**: socat/nsenter port forwarding has zero live-test coverage.
 
 ---
 

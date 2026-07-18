@@ -19,6 +19,7 @@ Tracked by agent. One-line items; complex work goes in `.jagent/planning/tickets
 
 ## Priority: CLI & Usability Gaps
 
+- [ ] **BUCKETS-12**: HerdController in-process API (snapshot/scale/stop) is dead code — cross-process CLI design means these methods are never wired; BUCKETS-12 ticket filed with two directions (Arc+IPC vs accept cross-process + allow_dead_code).
 - [ ] Allow configuring default behavior via `.buckets.toml` or `config.rs` (sandbox selection preference)
 - [ ] Address unhandled transitive companion dependency version conflicts (BFS resolver intersection limit)
 - [ ] Improve error reporting during connection failures or parsing errors from `dist.pkgx.dev`

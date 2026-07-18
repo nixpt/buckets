@@ -200,6 +200,14 @@ impl HerdController {
     }
 
     /// Get a snapshot of current herd state for display.
+    ///
+    /// In-process API: operates on the live `Child` handles held by *this*
+    /// controller, so it only works in the process that ran `buckets herd
+    /// deploy`. The `buckets herd status` CLI subcommand is a *separate*
+    /// process and cannot reach this controller's memory — it correctly
+    /// reads `state.json` instead. This method is therefore reserved for a
+    /// future in-process supervisor / library consumer; see BUCKETS-12.
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> Vec<InstanceState> {
         let mut s = self.state.lock().unwrap();
         let spec = s.spec.clone();
@@ -349,6 +357,14 @@ impl HerdController {
     }
 
     /// Scale the herd to a new replica count.
+    ///
+    /// In-process API: only the process holding this controller can apply a
+    /// live hot-scale (it owns the `Child` handles). The `buckets herd scale`
+    /// CLI subcommand is a separate process and currently stubs out with a
+    /// "requires the herd's controlling process" message — live hot-scale
+    /// needs an IPC channel (Unix socket) to instruct this controller's
+    /// reconciler. Tracked by BUCKETS-12.
+    #[allow(dead_code)]
     pub fn scale(&self, new_replicas: u32) -> Result<()> {
         let mut s = self.state.lock().unwrap();
         let current = s.spec.replicas;
@@ -386,6 +402,16 @@ impl HerdController {
     }
 
     /// Stop all replicas and clean up.
+    ///
+    /// In-process API: consumes `self` (owns the `Child` handles). Not wired
+    /// into `buckets herd deploy`'s shutdown because `ctrl` is moved into the
+    /// reconciler thread (`move || ctrl.run_reconciler(stop2)`), so the main
+    /// thread can't call `stop()` after `handle.join()`. The deploy shutdown
+    /// path and the `buckets herd stop` CLI subcommand both read `state.json`
+    /// and kill PIDs via `libc::kill` instead. Wiring this requires
+    /// Arc-sharing the controller so `stop()` can run after the reconciler
+    /// exits — tracked by BUCKETS-12.
+    #[allow(dead_code)]
     pub fn stop(self) -> Result<()> {
         eprintln!("▶ stopping herd '{}'", self.name);
         let mut s = self.state.lock().unwrap();
