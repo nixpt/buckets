@@ -62,6 +62,38 @@ buckets info git@latest
 # List cached installations
 buckets list
 
+# Reclaim disk space — the cache only grows by default, this is how you
+# prune it back. A bare `buckets clean` with no target is refused (the
+# cache dir is often shared across concurrent agents); pass a project,
+# --all, or both --all and --older-than.
+buckets clean node@18                    # remove one version
+buckets clean node                       # remove every version of a project
+buckets clean --all --dry-run            # preview a full wipe first
+buckets clean --all --older-than 30d     # remove entries not touched in 30 days
+
+# Persistent sessions — an OverlayFS mount shared across multiple `exec`
+# calls, so files written by one command survive into the next (unlike
+# `run`, which is a fresh sandbox every time).
+buckets session start node@20
+buckets session exec <session-id> -- node another-script.js
+buckets session list
+buckets session stop <session-id> --purge
+
+# Isolated virtual networks — buckets in the same net share a private
+# loopback (127.0.0.1) with no host network access, and a port can be
+# forwarded in from the host.
+buckets net create dev-net
+buckets net run dev-net node@20 -- node server.js
+buckets net expose dev-net 8080:3000
+buckets net rm dev-net
+
+# Herds — a fleet of bucket replicas with restart/scale/health-reconcile,
+# each replica getting HERD_NAME/HERD_REPLICA_INDEX env vars to self-identify.
+buckets herd deploy worker --spec node@20 --replicas 5 --net herd-net -- node worker.js
+buckets herd status worker
+buckets herd scale worker --replicas 8
+buckets herd stop worker
+
 # Build/test/run a real project — clone (git URL) or use (local path),
 # detect the build system, resolve the toolchain it needs, build inside
 # a sandboxed bucket. Doesn't touch the host filesystem outside the
@@ -225,12 +257,25 @@ itself (a separate, one-time `cargo build`, not part of this command).
 | `env <specs>` | Print shell exports (`--json` for structured output) |
 | `info <specs>` | Show resolution without installing |
 | `list` | Show cached installations |
+| `clean <project>[@version]` | Remove one cached project or version |
+| `clean --all [--older-than <30d\|12h\|2w>] [--dry-run]` | Bulk-remove cached installations to reclaim disk space |
 | `build <path-or-url> [--test] [--run]` | Detect + build (+ test/run) a real project, sandboxed |
 | `worktree create <repo> <branch> [--from <base>]` | Create an ephemeral worktree (prints its path) |
 | `worktree remove <repo> <path> <branch> [--force]` | Remove a worktree + its branch (git refuses if unmerged, unless --force) |
 | `worktree list <repo>` | List existing worktrees |
 | `gui [specs] -- <cmd> [--screenshot <path>] [--timeout <secs>] [--width <N>] [--height <N>]` | Run a GUI command in a sandboxed bucket against a fresh Xvfb X server |
 | `site <url> [--browser-bin <path>] [--gui] [--incognito] [--screenshot <path>] [--timeout <secs>]` | Open a URL with a real per-origin storage sandbox |
+| `session start <specs> [--tmpfs\|--zram] [--size <N>] [-- <cmd>]` | Start a persistent OverlayFS session (files survive across `exec` calls) |
+| `session exec <session-id> -- <cmd>` | Run a command inside an existing session |
+| `session stop <session-id> [--purge]` | Stop a session (`--purge` also removes its overlay state) |
+| `session list [--json]` | List active sessions |
+| `net create <name>` / `net rm <name>` / `net ls` | Create/remove/list named virtual networks |
+| `net run <name> <specs> -- <cmd>` | Run a bucket joined to a named network |
+| `net expose <name> <host_port>:<bucket_port>` | Forward a host port into a virtual network |
+| `herd deploy <name> --spec <spec> [-n <replicas>] [--net <name>] [--restart <policy>] -- <cmd>` | Deploy a fleet of bucket replicas |
+| `herd ls` / `herd status <name>` | List herds / show per-replica status |
+| `herd scale <name> -n <replicas>` | Scale a herd to a new replica count |
+| `herd stop <name>` | Stop and remove a herd |
 
 ## Configuration
 
