@@ -4,7 +4,7 @@
 |-------|-------|
 | **ID** | BUCKETS-12 |
 | **Priority** | P3 |
-| **Status** | In Progress |
+| **Status** | Done — foreman-verified, merged `fc5256b` (2026-07-18). Live hot-scale via IPC deferred to a follow-up ticket (not filed yet), out of this ticket's scope as written. |
 | **Phase** | M4 |
 | **Assignee** | nara |
 | **Dependencies** | BUCKETS-11 |
