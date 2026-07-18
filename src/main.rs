@@ -1618,13 +1618,15 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             }
 
             let ctrl = herd::HerdController::create(herd_spec, &herds_dir)?;
+            let ctrl = std::sync::Arc::new(ctrl);
 
             // Run the reconciler in a background thread; block main on Ctrl-C
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let stop2 = stop.clone();
+            let ctrl2 = ctrl.clone();
 
             let handle = std::thread::spawn(move || {
-                ctrl.run_reconciler(stop2);
+                ctrl2.run_reconciler(stop2);
             });
 
             // Wait for a real SIGINT/SIGTERM (not stdin EOF — see HERD_STOP_SIGNAL's doc).
@@ -1645,18 +1647,19 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             eprintln!("▶ shutting down herd '{name}'...");
             let _ = handle.join();
 
-            // Stop any surviving processes by reading persisted state
-            let state_path = herds_dir.join(&name).join("state.json");
-            if let Ok(content) = std::fs::read_to_string(&state_path) {
-                if let Ok(state) = serde_json::from_str::<herd::HerdState>(&content) {
-                    for inst in &state.instances {
-                        if let Some(pid) = inst.pid {
-                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
-                        }
-                    }
-                    let _ = std::fs::remove_dir_all(herds_dir.join(&name));
-                }
+            // Log live instance status before cleanup
+            for inst in ctrl.snapshot() {
+                eprintln!(
+                    "  instance {}: pid={:?} status={:?} restarts={}",
+                    inst.index, inst.pid, inst.status, inst.restart_count
+                );
             }
+
+            // Stop all replicas and clean up (drains Children, kills PIDs, removes state dir).
+            // The reconciler thread has been joined so only this Arc handle remains.
+            let ctrl = std::sync::Arc::try_unwrap(ctrl)
+                .expect("reconciler thread should have released its Arc clone");
+            ctrl.stop()?;
             Ok(())
         }
 

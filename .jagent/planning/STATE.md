@@ -19,12 +19,15 @@
 | Cargo Spec Resolver | **shipped** | `cargo:` scheme resolver to build and cache cargo binaries locally via crates.io API. |
 | Cellar Cache Locking | **shipped** | Exclusive advisory file locks (`fd-lock`) around cellar installs — safe for concurrent fleet agents installing the same package. |
 | Local Path Spec Support | **shipped** | `path:<local-path>` specs — detects the build system (Cargo/Go/npm/generic) and compiles+caches a local project's binaries for sandboxed execution. |
+| **buck-herd** | **shipped** | Mandala-pattern fleet orchestration (`buckets herd deploy/ls/status/scale/stop`), health polling + exponential-backoff auto-restart. |
+| **buckets clean** | **shipped** | Cache eviction command (`buckets clean --older-than <duration>`). |
+| **BUCKETS-12** | **In Progress** | HerdController in-process API wiring: `snapshot`/`stop` wired into deploy shutdown via Arc-share. `scale` deferred (needs IPC). Ls displays instance counts. |
 
 ---
 
 ## Active work
 
-Current focus is on M4 (Fleet Concurrency) — herd shipped, `buckets clean` shipped. BUCKETS-12 filed to address HerdController dead-code (in-process API unwired due to cross-process CLI design). Next open: BUCKETS-3 (Android/Termux PRoot verification).
+Current focus is on M4 (Fleet Concurrency) — herd shipped, `buckets clean` shipped. BUCKETS-12 in progress: `snapshot`/`stop` wired into deploy shutdown via Arc-share, `scale` deferred (needs IPC). Next open: BUCKETS-3 (Android/Termux PRoot verification).
 
 ---
 
@@ -42,7 +45,7 @@ _None known._
 | Tests passed | **188** (85 lib tests + 89 binary tests + 14 herd tests) |
 | Tests failed | 0 |
 | Tests ignored | 0 |
-| Warnings | 0 (BUCKETS-12: `#[allow(dead_code)]` on in-process API methods — see ticket) |
+| Warnings | 0 (BUCKETS-12: `scale` kept as `#[allow(dead_code)]` — needs IPC for live hot-scale) |
 | Composed features | CLI running, bwrap sandboxing, Xvfb GUI, surfer Site browser, Git worktree, herd, clean |
 | Cache location | `~/.cache/squadron-buckets` |
 | Build time (from clean) | ~15s (debug) |
@@ -53,7 +56,7 @@ _None known._
 
 ## Next 3 (from TASKS.md, priority order)
 
-1. **BUCKETS-12 (HerdController dead-code)**: Wire or mark `snapshot`/`scale`/`stop` as in-process API. BUCKETS-12 ticket filed.
+1. **BUCKETS-12 (HerdController in-process API)**: `snapshot`/`stop` wired into deploy shutdown via Arc-share. `scale` deferred (needs IPC). Next: live hot-scale via Unix socket IPC.
 2. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
 3. **buck-net expose_port live-test**: socat/nsenter port forwarding has zero live-test coverage.
 

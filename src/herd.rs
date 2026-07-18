@@ -110,6 +110,7 @@ pub struct HerdState {
 
 /// Runtime controller for a named herd. Holds the live child processes and
 /// runs a background reconciliation thread.
+#[derive(Clone, Debug)]
 pub struct HerdController {
     pub name: String,
     state: Arc<Mutex<InternalState>>,
@@ -120,6 +121,15 @@ struct InternalState {
     spec: HerdSpec,
     /// Live child handles indexed by replica index
     children: HashMap<u32, ChildEntry>,
+}
+
+impl std::fmt::Debug for InternalState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InternalState")
+            .field("spec", &self.spec)
+            .field("children_count", &self.children.len())
+            .finish()
+    }
 }
 
 struct ChildEntry {
@@ -205,9 +215,10 @@ impl HerdController {
     /// controller, so it only works in the process that ran `buckets herd
     /// deploy`. The `buckets herd status` CLI subcommand is a *separate*
     /// process and cannot reach this controller's memory — it correctly
-    /// reads `state.json` instead. This method is therefore reserved for a
-    /// future in-process supervisor / library consumer; see BUCKETS-12.
-    #[allow(dead_code)]
+    /// reads `state.json` instead.
+    ///
+    /// Used by `deploy`'s shutdown path to log live instance status before
+    /// calling `stop()`.
     pub fn snapshot(&self) -> Vec<InstanceState> {
         let mut s = self.state.lock().unwrap();
         let spec = s.spec.clone();
@@ -243,7 +254,7 @@ impl HerdController {
 
     /// Run the reconciliation loop on the calling thread (blocks until stopped).
     /// Call this in a background thread.
-    pub fn run_reconciler(&self, stop_signal: Arc<std::sync::atomic::AtomicBool>) {
+    pub fn run_reconciler(self: &Arc<Self>, stop_signal: Arc<std::sync::atomic::AtomicBool>) {
         eprintln!("▶ reconciler for herd '{}' started", self.name);
 
         loop {
@@ -403,15 +414,9 @@ impl HerdController {
 
     /// Stop all replicas and clean up.
     ///
-    /// In-process API: consumes `self` (owns the `Child` handles). Not wired
-    /// into `buckets herd deploy`'s shutdown because `ctrl` is moved into the
-    /// reconciler thread (`move || ctrl.run_reconciler(stop2)`), so the main
-    /// thread can't call `stop()` after `handle.join()`. The deploy shutdown
-    /// path and the `buckets herd stop` CLI subcommand both read `state.json`
-    /// and kill PIDs via `libc::kill` instead. Wiring this requires
-    /// Arc-sharing the controller so `stop()` can run after the reconciler
-    /// exits — tracked by BUCKETS-12.
-    #[allow(dead_code)]
+    /// In-process API: consumes `self` (owns the `Child` handles). Called by
+    /// `buckets herd deploy`'s shutdown path after the reconciler thread exits
+    /// to kill any surviving replicas and remove the state directory.
     pub fn stop(self) -> Result<()> {
         eprintln!("▶ stopping herd '{}'", self.name);
         let mut s = self.state.lock().unwrap();
