@@ -357,5 +357,7 @@ calling into them yet.
 
 ## License
 
-MIT — see `LICENSE`. (Acknowledgments above are for design/format credit,
-not a licensing obligation — no pkgx source is redistributed.)
+Dual-licensed under MIT OR Apache-2.0, your choice — see `LICENSE-MIT` and
+`LICENSE-APACHE` (the standard convention across the Rust ecosystem).
+(Acknowledgments above are for design/format credit, not a licensing
+obligation — no pkgx source is redistributed.)
