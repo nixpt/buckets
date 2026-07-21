@@ -324,7 +324,25 @@ this doesn't repeat the earlier zram-for-inference performance problems.
 
 ```bash
 cargo install --path .
+# or, from crates.io (published as `crush-buckets`, binary is still `buckets`)
+cargo install crush-buckets
 ```
+
+## Claude Code plugin
+
+This repo doubles as its own Claude Code plugin marketplace — install it
+directly from GitHub, no separate marketplace repo needed:
+
+```
+/plugin marketplace add nixpt/buckets
+/plugin install buckets@buckets
+```
+
+The plugin ships a `buckets-usage` skill that teaches a model when to reach
+for a throwaway bucket instead of a global install, plus the core command
+reference. It does **not** vendor a compiled `buckets` binary (a public
+OSS repo shouldn't ship arch-specific blobs) — install `buckets` itself via
+one of the two commands above first.
 
 ## Acknowledgments
 
