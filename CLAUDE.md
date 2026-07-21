@@ -67,6 +67,18 @@ lazily, with clear errors, not required for any other subcommand.
 No `CARGO_TARGET_DIR` redirection needed — standalone crate, no path-deps
 on any peer project.
 
+## Claude Code plugin
+
+`.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` make this
+repo a self-referencing single-plugin marketplace (`source: "."`) — install
+via `/plugin marketplace add nixpt/buckets` then `/plugin install
+buckets@buckets`. Ships one skill, `skills/buckets-usage/SKILL.md`, teaching
+a model when to reach for a bucket instead of a global install/version
+switch. Deliberately does not vendor a compiled `buckets` binary (public
+repo, arch-specific blobs don't belong in git history) — the skill tells
+the model to check `command -v buckets` and fall back to `cargo install
+crush-buckets` / `cargo install --path .` if missing.
+
 ## Task IDs
 
 `BUCKETS-XX`, branch `agent/<name>/BUCKETS-XX`, per `projects/CLAUDE.md`.
