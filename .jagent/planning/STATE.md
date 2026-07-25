@@ -1,8 +1,8 @@
 # Planning state — buckets
 
-**Updated:** 2026-07-25T02:41:00-05:00
-**Milestone focus:** M4 — Fleet Concurrency & Optimization (see ROADMAP.md, TASKS.md)
-**Branch:** `agent/nixp/BUCKETS-14`
+**Updated:** 2026-07-25T02:43:40-05:00
+**Milestone focus:** Close M2 (BUCKETS-3 Termux); M3/M4 largely shipped (see ROADMAP.md, TASKS.md)
+**Branch:** `agent/nixp/BUCKETS-14` — PR https://github.com/nixpt/buckets/pull/3
 
 ## Delivery snapshot
 

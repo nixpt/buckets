@@ -1,16 +1,14 @@
 # Handoff
 
-Updated: 2026-07-25T02:41:00-05:00
+Updated: 2026-07-25T02:43:40-05:00
 
 ## Summary
-BUCKETS-14: herd live hot-scale via Unix-socket IPC. `serve_control` /
-`send_control` in `herd.rs`; deploy spawns IPC thread; Scale/Status/Stop
-CLI use the socket. Live smoke verified scale 1→2 + IPC stop. Branch
-`agent/nixp/BUCKETS-14`.
+BUCKETS-14 complete and pushed as PR #3. Planning memory (.dejavue/.jagent) refreshed to match: M3 done, M4 herd+IPC done, M2 blocked on Termux (BUCKETS-3).
 
 ## Next Steps
-- BUCKETS-3 (Android/Termux PRoot verification)
-- buck-net expose_port (socat/nsenter) live-test coverage
+- Foreman: merge https://github.com/nixpt/buckets/pull/3 when ready
+- BUCKETS-3 — Android/Termux PRoot verification on phone-claude
+- buck-net expose_port live-test (socat/nsenter)
 - CLAUDE.md test-count hygiene
 
 ## Boot Instructions
