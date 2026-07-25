@@ -57,9 +57,9 @@ _None known._
 
 ## Next 3 (from TASKS.md, priority order)
 
-1. **BUCKETS-3 (Android/Termux Verification)**: Verify PRoot behavior and Yama ptrace policy under Termux.
-2. **buck-net expose_port live-test**: socat/nsenter port forwarding has zero live-test coverage.
-3. **CLAUDE.md test-count hygiene**: Build section still cites stale test count.
+1. **Merge PR #3** (BUCKETS-14 herd IPC) — then continue from master.
+2. **BUCKETS-3 (Android/Termux Verification)**: Verify PRoot behavior and Yama ptrace policy under Termux.
+3. **buck-net expose_port live-test** / CLAUDE.md test-count hygiene.
 
 ---
 
