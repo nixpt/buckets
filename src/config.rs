@@ -150,8 +150,15 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn sanitize_project_name(name: &str) -> String {
+    // Colon-prefixed specs must not land as literal `cargo:foo` / `pypi:bar`
+    // directory names — `:` splits PATH-like env vars and breaks cellar
+    // lookups. Map each family to a nested subdirectory instead.
     if let Some(rest) = name.strip_prefix("cargo:") {
         format!("cargo/{}", rest)
+    } else if let Some(rest) = name.strip_prefix("pypi:") {
+        format!("pypi/{}", rest)
+    } else if let Some(rest) = name.strip_prefix("npm:") {
+        format!("npm/{}", rest)
     } else if let Some(rest) = name.strip_prefix("path:") {
         let relative_rest = rest.trim_start_matches('/');
         format!("path/{}", relative_rest)

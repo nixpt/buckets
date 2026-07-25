@@ -47,6 +47,11 @@ buckets run rust@latest -- rustc --version
 buckets run node@20 python@3.11 -- node -e "console.log('and python is at', process.env.PATH)"
 buckets run go@1.22 cmake@latest -- go version
 
+# Language registries (BUCKETS-15) — install into the shared cellar
+buckets run pypi:six@1.16 -- python3 -c "import six; print(six.__version__)"
+buckets run npm:is-number@7 -- node -e "console.log(require('is-number')(3))"
+buckets env pypi:requests@2.31 npm:is-number@7   # PYTHONPATH + NODE_PATH
+
 # Open an interactive shell with the runtime in PATH
 buckets shell node@20
 buckets shell python@3.11 --shell /bin/zsh
