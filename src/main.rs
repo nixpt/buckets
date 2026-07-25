@@ -1620,16 +1620,24 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             let ctrl = herd::HerdController::create(herd_spec, &herds_dir)?;
             let ctrl = std::sync::Arc::new(ctrl);
 
-            // Run the reconciler in a background thread; block main on Ctrl-C
+            // Run the reconciler + IPC control server in background threads;
+            // block main on Ctrl-C or an IPC Stop request.
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let stop2 = stop.clone();
             let ctrl2 = ctrl.clone();
 
-            let handle = std::thread::spawn(move || {
+            let reconciler = std::thread::spawn(move || {
                 ctrl2.run_reconciler(stop2);
             });
 
-            // Wait for a real SIGINT/SIGTERM (not stdin EOF — see HERD_STOP_SIGNAL's doc).
+            let stop_ipc = stop.clone();
+            let ctrl_ipc = ctrl.clone();
+            let ipc = std::thread::spawn(move || {
+                herd::serve_control(ctrl_ipc, stop_ipc);
+            });
+
+            // Wait for a real SIGINT/SIGTERM (not stdin EOF — see HERD_STOP_SIGNAL's doc)
+            // or for `buckets herd stop` via the control socket.
             unsafe {
                 if libc::signal(libc::SIGINT, herd_signal_handler as *const () as usize) == libc::SIG_ERR {
                     eprintln!("  warning: could not install SIGINT handler for herd deploy");
@@ -1638,14 +1646,17 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                     eprintln!("  warning: could not install SIGTERM handler for herd deploy");
                 }
             }
-            eprintln!("  Herd running. Press Ctrl-C to stop.");
-            while !HERD_STOP_SIGNAL.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("  Herd running. Press Ctrl-C to stop (or: buckets herd stop {name}).");
+            while !HERD_STOP_SIGNAL.load(std::sync::atomic::Ordering::SeqCst)
+                && !stop.load(std::sync::atomic::Ordering::SeqCst)
+            {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
 
             eprintln!("▶ shutting down herd '{name}'...");
-            let _ = handle.join();
+            let _ = reconciler.join();
+            let _ = ipc.join();
 
             // Log live instance status before cleanup
             for inst in ctrl.snapshot() {
@@ -1656,9 +1667,9 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             }
 
             // Stop all replicas and clean up (drains Children, kills PIDs, removes state dir).
-            // The reconciler thread has been joined so only this Arc handle remains.
+            // Both background threads have been joined so only this Arc handle remains.
             let ctrl = std::sync::Arc::try_unwrap(ctrl)
-                .expect("reconciler thread should have released its Arc clone");
+                .expect("background threads should have released their Arc clones");
             ctrl.stop()?;
             Ok(())
         }
@@ -1697,6 +1708,37 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
         }
 
         HerdSubcommand::Status { name } => {
+            // Prefer live IPC snapshot when the deploy process is up; fall back
+            // to persisted state.json (stale but still useful after a crash).
+            if herd::control_sock_path(&herds_dir, &name).exists() {
+                let resp = herd::send_control(&herds_dir, &name, herd::HerdRequest::Status)?;
+                let instances = resp.instances.unwrap_or_default();
+                let replicas = resp.replicas.unwrap_or(0);
+                let running = instances
+                    .iter()
+                    .filter(|i| i.status == herd::InstanceStatus::Running)
+                    .count();
+                println!("Herd:    {}", resp.name.as_deref().unwrap_or(&name));
+                println!("Spec:     {}", resp.bucket.as_deref().unwrap_or("—"));
+                println!("Replicas: {running}/{replicas}");
+                if let Some(ref net) = resp.net {
+                    println!("Network:  {net}");
+                }
+                println!();
+                println!("{:<6} {:<10} {:<12} {}", "IDX", "PID", "STATUS", "RESTARTS");
+                println!("{}", "─".repeat(45));
+                for inst in &instances {
+                    println!(
+                        "{:<6} {:<10} {:<12} {}",
+                        inst.index,
+                        inst.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
+                        format!("{:?}", inst.status).to_lowercase(),
+                        inst.restart_count,
+                    );
+                }
+                return Ok(());
+            }
+
             let state_path = herds_dir.join(&name).join("state.json");
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found — is it running?");
@@ -1727,14 +1769,28 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             Ok(())
         }
 
-        HerdSubcommand::Scale { name, replicas: _ } => {
+        HerdSubcommand::Scale { name, replicas } => {
             let state_path = herds_dir.join(&name).join("state.json");
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found");
             }
-            eprintln!("⚠ Live hot-scale requires the herd's controlling process.");
-            eprintln!("  Stop and re-deploy with the new --replicas value for now.");
-            eprintln!("  (IPC-based hot-scale is planned for a future release)");
+            let resp = herd::send_control(
+                &herds_dir,
+                &name,
+                herd::HerdRequest::Scale { replicas },
+            )?;
+            let running = resp
+                .instances
+                .as_ref()
+                .map(|is| {
+                    is.iter()
+                        .filter(|i| i.status == herd::InstanceStatus::Running)
+                        .count()
+                })
+                .unwrap_or(0);
+            eprintln!(
+                "✓ herd '{name}' scaled to {replicas} ({running} running)"
+            );
             Ok(())
         }
 
@@ -1743,9 +1799,31 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found");
             }
+
+            // Prefer IPC so the deploy process tears down cleanly (kills
+            // children it owns + removes state). Fall back to SIGTERM from
+            // state.json if the control socket is gone (orphaned herd).
+            if herd::control_sock_path(&herds_dir, &name).exists() {
+                eprintln!("▶ stopping herd '{name}' via control socket");
+                let _ = herd::send_control(&herds_dir, &name, herd::HerdRequest::Stop)?;
+                // Deploy process owns cleanup; wait briefly for state dir to go.
+                for _ in 0..50 {
+                    if !state_path.exists() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                if state_path.exists() {
+                    eprintln!("  note: deploy process is shutting down; state may linger briefly");
+                } else {
+                    eprintln!("✓ herd '{name}' stopped");
+                }
+                return Ok(());
+            }
+
             let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
-            eprintln!("▶ stopping herd '{name}'");
+            eprintln!("▶ stopping herd '{name}' (no control socket — killing from state.json)");
             for inst in &state.instances {
                 if let Some(pid) = inst.pid {
                     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }

@@ -1,9 +1,10 @@
 # State
 
-Updated: 2026-07-18T12:00:00-05:00
+Updated: 2026-07-25T02:41:00-05:00
 
-BUCKETS-9 and BUCKETS-10 marked Done. 188 passing tests. BUCKETS-11 (buck-herd) shipped on master. BUCKETS-12 filed: HerdController in-process API (snapshot/scale/stop) is dead code due to cross-process CLI design — wired `#[allow(dead_code)]` + doc comments, Ls now displays instance counts. `buckets clean` shipped. All herd-related docs documented in README.
+BUCKETS-14 shipped: herd Unix-socket IPC for live hot-scale. Deploy binds
+`control.sock`; `scale`/`status`/`stop` are cross-process clients. `scale`
+no longer dead code. 96 lib + 100 bin unit tests pass; 0 warnings.
 
-Next open: BUCKETS-3 (Android/Termux PRoot verification), BUCKETS-12 (herd controller wiring refactor).
-
-Known gap: buck-net expose_port (socat/nsenter) has zero live-test coverage.
+Next open: BUCKETS-3 (Android/Termux PRoot verification), buck-net
+expose_port live-test gap, CLAUDE.md stale test count.

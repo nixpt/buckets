@@ -17,27 +17,32 @@
 //! buckets herd ls
 //! buckets herd status worker
 //!
-//! # Scale up/down live
+//! # Scale up/down live (talks to deploy via Unix control socket)
 //! buckets herd scale worker --replicas 8
 //!
-//! # Tear down
+//! # Tear down (IPC stop preferred; kills + cleans state)
 //! buckets herd stop worker
 //! ```
 //!
 //! ## State
 //!
 //! Herd state is persisted to `cache_dir/herds/{name}/state.json`. The
-//! reconciliation thread reads this file so it survives config changes. When
-//! the process that ran `buckets herd deploy` exits, the background
-//! reconciler stops — herds are session-scoped unless wrapped in a supervisor
-//! (systemd, tmux, etc.).
+//! reconciliation thread reads this file so it survives config changes. The
+//! deploy process also binds `cache_dir/herds/{name}/control.sock` so
+//! cross-process `scale` / `status` / `stop` can reach the live controller
+//! (BUCKETS-14). When the process that ran `buckets herd deploy` exits, the
+//! background reconciler stops — herds are session-scoped unless wrapped in
+//! a supervisor (systemd, tmux, etc.).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -81,7 +86,7 @@ pub enum RestartPolicy {
 }
 
 /// Snapshot of a single replica's runtime state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstanceState {
     pub index: u32,
     pub pid: Option<u32>,
@@ -370,12 +375,9 @@ impl HerdController {
     /// Scale the herd to a new replica count.
     ///
     /// In-process API: only the process holding this controller can apply a
-    /// live hot-scale (it owns the `Child` handles). The `buckets herd scale`
-    /// CLI subcommand is a separate process and currently stubs out with a
-    /// "requires the herd's controlling process" message — live hot-scale
-    /// needs an IPC channel (Unix socket) to instruct this controller's
-    /// reconciler. Tracked by BUCKETS-12.
-    #[allow(dead_code)]
+    /// live hot-scale (it owns the `Child` handles). Cross-process
+    /// `buckets herd scale` reaches this method via the Unix-socket IPC
+    /// served by [`serve_control`] (BUCKETS-14).
     pub fn scale(&self, new_replicas: u32) -> Result<()> {
         let mut s = self.state.lock().unwrap();
         let current = s.spec.replicas;
@@ -455,6 +457,215 @@ impl HerdController {
             serde_json::to_string_pretty(&state)?,
         ).context("Failed to persist herd state")
     }
+}
+
+// ── Unix-socket IPC (BUCKETS-14) ─────────────────────────────────────────────
+
+/// Path to the control socket for a named herd.
+pub fn control_sock_path(herds_dir: &Path, name: &str) -> PathBuf {
+    herds_dir.join(name).join("control.sock")
+}
+
+/// One-shot request from a CLI process to the deploy process.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum HerdRequest {
+    Scale { replicas: u32 },
+    Status,
+    Stop,
+}
+
+/// Response from the deploy process.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HerdResponse {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instances: Option<Vec<InstanceState>>,
+}
+
+impl HerdResponse {
+    fn ok_empty() -> Self {
+        Self {
+            ok: true,
+            error: None,
+            name: None,
+            bucket: None,
+            replicas: None,
+            net: None,
+            instances: None,
+        }
+    }
+
+    fn err(msg: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: Some(msg.into()),
+            name: None,
+            bucket: None,
+            replicas: None,
+            net: None,
+            instances: None,
+        }
+    }
+}
+
+/// Serve control requests until `stop_signal` is set. Binds
+/// `{state_dir}/control.sock` and unlinks it on exit.
+///
+/// Intended to run on a background thread owned by `buckets herd deploy`.
+pub fn serve_control(ctrl: Arc<HerdController>, stop_signal: Arc<AtomicBool>) {
+    let sock = ctrl.state_dir.join("control.sock");
+    let _ = fs::remove_file(&sock);
+
+    let listener = match UnixListener::bind(&sock) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("  ✗ herd '{}': failed to bind control socket {}: {e}", ctrl.name, sock.display());
+            return;
+        }
+    };
+    if let Err(e) = listener.set_nonblocking(true) {
+        eprintln!("  ✗ herd '{}': control socket nonblocking failed: {e}", ctrl.name);
+        let _ = fs::remove_file(&sock);
+        return;
+    }
+    eprintln!("▶ herd '{}' control socket: {}", ctrl.name, sock.display());
+
+    while !stop_signal.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if let Err(e) = handle_control_client(&ctrl, stream, &stop_signal) {
+                    eprintln!("  ✗ herd '{}': control client error: {e}", ctrl.name);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                eprintln!("  ✗ herd '{}': control accept error: {e}", ctrl.name);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&sock);
+    eprintln!("▶ herd '{}' control socket closed", ctrl.name);
+}
+
+fn handle_control_client(
+    ctrl: &HerdController,
+    stream: UnixStream,
+    stop_signal: &Arc<AtomicBool>,
+) -> Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    let req: HerdRequest = match serde_json::from_str(line) {
+        Ok(r) => r,
+        Err(e) => {
+            write_response(&stream, &HerdResponse::err(format!("invalid request: {e}")))?;
+            return Ok(());
+        }
+    };
+
+    let resp = match req {
+        HerdRequest::Scale { replicas } => match ctrl.scale(replicas) {
+            Ok(()) => {
+                eprintln!("  ✓ herd '{}': scaled to {replicas} via IPC", ctrl.name);
+                let mut r = HerdResponse::ok_empty();
+                r.name = Some(ctrl.name.clone());
+                r.replicas = Some(replicas);
+                r.instances = Some(ctrl.snapshot());
+                r
+            }
+            Err(e) => HerdResponse::err(e.to_string()),
+        },
+        HerdRequest::Status => {
+            let s = ctrl.state.lock().unwrap();
+            let mut r = HerdResponse::ok_empty();
+            r.name = Some(s.spec.name.clone());
+            r.bucket = Some(s.spec.bucket.clone());
+            r.replicas = Some(s.spec.replicas);
+            r.net = s.spec.net.clone();
+            drop(s);
+            r.instances = Some(ctrl.snapshot());
+            r
+        }
+        HerdRequest::Stop => {
+            eprintln!("  ✓ herd '{}': stop requested via IPC", ctrl.name);
+            stop_signal.store(true, Ordering::SeqCst);
+            let mut r = HerdResponse::ok_empty();
+            r.name = Some(ctrl.name.clone());
+            r
+        }
+    };
+
+    write_response(&stream, &resp)
+}
+
+fn write_response(mut stream: &UnixStream, resp: &HerdResponse) -> Result<()> {
+    let mut payload = serde_json::to_string(resp)?;
+    payload.push('\n');
+    stream.write_all(payload.as_bytes())?;
+    stream.flush()?;
+    Ok(())
+}
+
+/// Send a one-shot control request to a running herd's deploy process.
+pub fn send_control(herds_dir: &Path, name: &str, req: HerdRequest) -> Result<HerdResponse> {
+    let sock = control_sock_path(herds_dir, name);
+    if !sock.exists() {
+        bail!(
+            "Herd '{name}' control socket not found at {} — is 'buckets herd deploy' still running?",
+            sock.display()
+        );
+    }
+
+    let mut stream = UnixStream::connect(&sock)
+        .with_context(|| format!("Failed to connect to herd '{name}' control socket {}", sock.display()))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+    let mut payload = serde_json::to_string(&req)?;
+    payload.push('\n');
+    stream.write_all(payload.as_bytes())?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .context("Failed to read control response")?;
+    if line.trim().is_empty() {
+        bail!("Empty response from herd '{name}' control socket");
+    }
+    let resp: HerdResponse = serde_json::from_str(line.trim())
+        .context("Failed to parse control response")?;
+    if !resp.ok {
+        bail!(
+            "Herd '{name}' control error: {}",
+            resp.error.as_deref().unwrap_or("unknown")
+        );
+    }
+    Ok(resp)
 }
 
 // ── Spawn helper ──────────────────────────────────────────────────────────────
@@ -547,5 +758,118 @@ mod tests {
     fn list_all_empty_for_missing_dir() {
         let dir = tempfile::tempdir().unwrap();
         assert!(list_all(&dir.path().join("herds")).is_empty());
+    }
+
+    #[test]
+    fn control_sock_path_joins_herd_name() {
+        let p = control_sock_path(Path::new("/cache/herds"), "worker");
+        assert_eq!(p, PathBuf::from("/cache/herds/worker/control.sock"));
+    }
+
+    #[test]
+    fn herd_request_roundtrip() {
+        let cases = [
+            HerdRequest::Scale { replicas: 8 },
+            HerdRequest::Status,
+            HerdRequest::Stop,
+        ];
+        for req in cases {
+            let json = serde_json::to_string(&req).unwrap();
+            let back: HerdRequest = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, req);
+        }
+        assert_eq!(
+            serde_json::from_str::<HerdRequest>(r#"{"cmd":"scale","replicas":3}"#).unwrap(),
+            HerdRequest::Scale { replicas: 3 }
+        );
+        assert_eq!(
+            serde_json::from_str::<HerdRequest>(r#"{"cmd":"status"}"#).unwrap(),
+            HerdRequest::Status
+        );
+    }
+
+    #[test]
+    fn herd_response_roundtrip() {
+        let resp = HerdResponse {
+            ok: true,
+            error: None,
+            name: Some("worker".into()),
+            bucket: Some("node@20".into()),
+            replicas: Some(2),
+            net: None,
+            instances: Some(vec![InstanceState {
+                index: 0,
+                pid: Some(42),
+                status: InstanceStatus::Running,
+                restart_count: 0,
+                last_exit_code: None,
+            }]),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: HerdResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, resp);
+    }
+
+    #[test]
+    fn send_control_errors_when_socket_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = send_control(dir.path(), "ghost", HerdRequest::Status).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("control socket not found"), "got: {msg}");
+    }
+
+    #[test]
+    fn serve_control_handles_status_and_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let herds_dir = dir.path().join("herds");
+        fs::create_dir_all(herds_dir.join("test")).unwrap();
+
+        // Minimal controller with empty children — Status/Stop don't need live spawns.
+        let spec = HerdSpec {
+            name: "test".into(),
+            bucket: "node@20".into(),
+            command: vec![],
+            env: HashMap::new(),
+            replicas: 0,
+            net: None,
+            check_interval_secs: 5,
+            restart: RestartPolicy::Never,
+            max_restarts: 10,
+        };
+        let ctrl = Arc::new(HerdController {
+            name: "test".into(),
+            state: Arc::new(Mutex::new(InternalState {
+                spec,
+                children: HashMap::new(),
+            })),
+            state_dir: herds_dir.join("test"),
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let ctrl2 = ctrl.clone();
+        let handle = std::thread::spawn(move || serve_control(ctrl2, stop2));
+
+        // Wait for the socket to appear
+        let sock = control_sock_path(&herds_dir, "test");
+        for _ in 0..50 {
+            if sock.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(sock.exists(), "control socket should be bound");
+
+        let status = send_control(&herds_dir, "test", HerdRequest::Status).unwrap();
+        assert!(status.ok);
+        assert_eq!(status.name.as_deref(), Some("test"));
+        assert_eq!(status.bucket.as_deref(), Some("node@20"));
+        assert_eq!(status.replicas, Some(0));
+
+        let stop_resp = send_control(&herds_dir, "test", HerdRequest::Stop).unwrap();
+        assert!(stop_resp.ok);
+        assert!(stop.load(Ordering::SeqCst));
+
+        handle.join().unwrap();
+        assert!(!sock.exists(), "control socket should be unlinked on exit");
     }
 }

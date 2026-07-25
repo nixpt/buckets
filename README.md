@@ -89,6 +89,8 @@ buckets net rm dev-net
 
 # Herds — a fleet of bucket replicas with restart/scale/health-reconcile,
 # each replica getting HERD_NAME/HERD_REPLICA_INDEX env vars to self-identify.
+# `deploy` owns the processes and serves a Unix control socket so `scale` /
+# `status` / `stop` from another CLI process can talk to it live.
 buckets herd deploy worker --spec node@20 --replicas 5 --net herd-net -- node worker.js
 buckets herd status worker
 buckets herd scale worker --replicas 8
@@ -274,8 +276,8 @@ itself (a separate, one-time `cargo build`, not part of this command).
 | `net expose <name> <host_port>:<bucket_port>` | Forward a host port into a virtual network |
 | `herd deploy <name> --spec <spec> [-n <replicas>] [--net <name>] [--restart <policy>] -- <cmd>` | Deploy a fleet of bucket replicas |
 | `herd ls` / `herd status <name>` | List herds / show per-replica status |
-| `herd scale <name> -n <replicas>` | Scale a herd to a new replica count |
-| `herd stop <name>` | Stop and remove a herd |
+| `herd scale <name> -n <replicas>` | Live hot-scale via the deploy process's Unix control socket |
+| `herd stop <name>` | Stop via control socket (clean deploy shutdown); falls back to SIGTERM from state.json |
 
 ## Configuration
 
