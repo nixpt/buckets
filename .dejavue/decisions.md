@@ -91,3 +91,9 @@ Artifacts: src/net.rs,src/main.rs,src/bucketfile.rs
 Outcome:
 All 3 verified via real buckets build/run (not just unit tests): buck-net create/rm succeed with no permission error, quoted ENTRYPOINT prints real output, COPY from a different cwd now resolves correctly. 93/93 tests pass. Committed as 4 separate fix commits + 1 docs commit + 1 unrelated pre-existing validate_android.sh commit, pushed to agent/cece-buckets/BUCKETS-9-10-continue @ 89b6bc0.
 
+
+## 2026-08-03T17:24:22-05:00 — BUCKETS-16: --sched via opt-in buildsched cargo feature (default OFF)
+
+Reason:
+okd-core[compute] shape keeps the default build peer-dep-free (cargo tree: 0 buildsched; buildsched carries an absolute-path zpu dep that only resolves on fleet boxes). Sched builds always unsandboxed — the pipeline spawns its own cargo subprocess tree, outside the per-command bwrap wrap. Toolchain env routed via PipelineConfig::with_child_env (pipeline's CARGO_TARGET_DIR/CARGO_BUILD_JOBS win on conflict, BSC-12 precedence); virtual workspaces / non-cargo projects fall back to plain cargo build with one honest line.
+
