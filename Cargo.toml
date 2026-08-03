@@ -16,6 +16,15 @@ categories = ["command-line-utilities", "development-tools"]
 name = "buckets"
 path = "src/main.rs"
 
+[features]
+# Opt-in scheduler integration (BUCKETS-16): `buckets build --sched` routes
+# cargo builds through buildsched's admission-controlled pipeline. OFF by
+# default on purpose — buckets' standing posture is "self-contained, no path
+# deps on any peer project" (same opt-in shape as the fleet's
+# okd-core[compute] precedent), and buildsched itself carries an
+# absolute-path dep on zpu that only resolves on fleet boxes.
+buildsched = ["dep:buildsched"]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -32,6 +41,8 @@ toml = "0.8"
 fd-lock = "4"
 shlex = "1"
 libc = "0.2"
+# Sibling peer repo — only pulled in by the opt-in `buildsched` feature above.
+buildsched = { path = "../buildsched", optional = true }
 
 
 [profile.release]
