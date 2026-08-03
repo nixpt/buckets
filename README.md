@@ -134,6 +134,20 @@ buckets site https://example.com --gui --screenshot /tmp/site.png --timeout 5
 buckets site https://example.com --incognito   # ephemeral storage, removed on exit
 ```
 
+## Admission-controlled builds (`--sched`)
+
+`buckets build <dir> --sched` routes a cargo build through
+[buildsched](../buildsched)'s admission-controlled pipeline (`bob`): per-crate
+jobs gated on memory watermarks, PSI pressure, and disk headroom instead of one
+monolithic `cargo build`. Opt-in at compile time — the `buildsched` cargo
+feature (OFF by default, `cargo build --features buildsched`) adds a path dep
+on the sibling buildsched repo; the default build stays fully self-contained.
+Cargo projects with a single `[package]` only: virtual workspaces and non-cargo
+projects print a one-line notice and fall back to the normal build path. Sched
+builds always run unsandboxed (the pipeline spawns its own cargo subprocess
+tree, which can't live inside the per-command bwrap wrap); the bucket toolchain
+env is still injected into every pipeline subprocess.
+
 ## Real process isolation
 
 `run`/`shell`/`build` all execute under [bubblewrap](https://github.com/containers/bubblewrap)

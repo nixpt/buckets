@@ -65,7 +65,20 @@ and (only if `--screenshot` is used) ImageMagick's `import` — checked
 lazily, with clear errors, not required for any other subcommand.
 
 No `CARGO_TARGET_DIR` redirection needed — standalone crate, no path-deps
-on any peer project.
+on any peer project **in the default build**. The one exception is the
+opt-in `buildsched` cargo feature (BUCKETS-16): `--features buildsched`
+adds a `../buildsched` path dep so `buckets build --sched` can route cargo
+builds through buildsched's admission-controlled pipeline
+(`buildsched::pipeline::{PipelineConfig, run}`, toolchain env injected via
+`with_child_env`). Same opt-in shape as the fleet's `okd-core[compute]`
+precedent: default `cargo build` pulls zero peer deps (`cargo tree` shows
+no buildsched), and the feature stays off by default also because
+buildsched itself has an absolute-path dep on zpu that only resolves on
+fleet boxes. Without the feature, `--sched` fails fast with a
+rebuild-with-features error; with it, non-cargo projects and virtual
+workspaces fall back to the normal path, and sched builds always run
+unsandboxed (the pipeline spawns its own cargo subprocess tree, outside
+the per-command bwrap wrap).
 
 ## Claude Code plugin
 
