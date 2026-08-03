@@ -221,6 +221,16 @@ enum Command {
         /// Build/test/run unsandboxed (plain subprocess, no bwrap containment).
         #[arg(long)]
         no_sandbox: bool,
+
+        /// Route the cargo build through buildsched's admission-controlled
+        /// pipeline (memory/PSI/disk gating). Requires buckets compiled with
+        /// the `buildsched` cargo feature; cargo projects with a single
+        /// `[package]` only (others fall back to the normal path). Sched
+        /// builds always run unsandboxed — the pipeline spawns its own
+        /// cargo subprocess tree, which can't live inside the per-command
+        /// bwrap wrap.
+        #[arg(long)]
+        sched: bool,
     },
 
     /// Ephemeral git worktrees — a task gets its own working copy at a
@@ -625,8 +635,8 @@ fn main() -> Result<()> {
         Command::Clean { spec, all, older_than, dry_run } => {
             cmd_clean(&config, spec.as_deref(), all, older_than.as_deref(), dry_run)
         }
-        Command::Build { path_or_url, bucketfile, tag, test, run, no_sandbox } => {
-            cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, &config, &index)
+        Command::Build { path_or_url, bucketfile, tag, test, run, no_sandbox, sched } => {
+            cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, sched, &config, &index)
         }
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
         Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password, web } => {
@@ -1157,6 +1167,7 @@ fn parse_duration(s: &str) -> Result<std::time::Duration> {
 
 /// Clone/use a source repo, detect its build system, resolve the toolchain
 /// it needs, and run build (+ optionally test, run) sandboxed against it.
+#[allow(clippy::too_many_arguments)]
 fn cmd_build(
     path_or_url: &str,
     bucketfile: Option<&str>,
@@ -1164,9 +1175,21 @@ fn cmd_build(
     test: bool,
     run: bool,
     no_sandbox: bool,
+    sched: bool,
     config: &Config,
     index: &Index,
 ) -> Result<()> {
+    // Fail fast, before any clone/resolve work: without the feature there is
+    // no pipeline to route to, and silently ignoring the flag would lie.
+    #[cfg(not(feature = "buildsched"))]
+    if sched {
+        anyhow::bail!(
+            "--sched requires buckets compiled with the 'buildsched' cargo feature \
+             (off by default — it adds a path dep on the sibling buildsched repo). \
+             Rebuild with: cargo build --features buildsched"
+        );
+    }
+
     let (source_dir, is_temp) = project::resolve_source(path_or_url)?;
 
     // Check if we should build a Bucketfile
@@ -1204,7 +1227,14 @@ fn cmd_build(
         .with_context(|| format!("Failed to resolve toolchain: {}", plan.toolchain_specs.join(", ")))?;
 
     let outcome = (|| -> Result<()> {
-        run_project_step("build", &plan.build_cmd, &plan.source_dir, no_sandbox, &resolved)?;
+        #[cfg(feature = "buildsched")]
+        let sched_handled = sched && sched_build(&plan, no_sandbox, &resolved)?;
+        #[cfg(not(feature = "buildsched"))]
+        let sched_handled = false;
+
+        if !sched_handled {
+            run_project_step("build", &plan.build_cmd, &plan.source_dir, no_sandbox, &resolved)?;
+        }
 
         if test {
             match &plan.test_cmd {
@@ -1277,6 +1307,102 @@ fn run_project_step(
         anyhow::bail!("{label} failed (exit {})", status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+/// Route the build step through buildsched's admission-controlled pipeline
+/// (BUCKETS-16 / buildsched's BSC-5). Returns `Ok(true)` when the pipeline
+/// handled the build, `Ok(false)` to fall back to the normal
+/// `run_project_step` path (non-cargo project, or a virtual workspace with
+/// no single `[package]` to target).
+///
+/// Sched builds are always unsandboxed: the pipeline spawns its own `cargo`
+/// subprocess tree (metadata + one `cargo build -p` per job), which can't
+/// run inside the existing per-command bwrap wrap. The bucket toolchain
+/// still applies — the same composed env the normal unsandboxed path sets
+/// on its child is injected into every pipeline subprocess via
+/// `with_child_env` (the pipeline's own CARGO_TARGET_DIR/CARGO_BUILD_JOBS
+/// win on a key conflict, per buildsched's documented precedence).
+///
+/// Target dir stays cargo's default (`<source_dir>/target`) on purpose —
+/// tiered/zram target-dir wiring is bob's own business, not buckets'.
+#[cfg(feature = "buildsched")]
+fn sched_build(
+    plan: &project::ProjectPlan,
+    no_sandbox: bool,
+    resolved: &types::ResolvedEnvironment,
+) -> Result<bool> {
+    let manifest_path = plan.source_dir.join("Cargo.toml");
+    if !manifest_path.exists() {
+        eprintln!("⚠ --sched only supports cargo projects — falling back to the normal build path");
+        return Ok(false);
+    }
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let package = match cargo_package_name(&manifest) {
+        Some(name) => name,
+        None => {
+            eprintln!("⚠ virtual workspace — --sched needs a single target package, falling back to cargo build");
+            return Ok(false);
+        }
+    };
+
+    if !no_sandbox {
+        eprintln!("▶ --sched builds run unsandboxed (the pipeline spawns its own cargo subprocess tree, outside bwrap)");
+    }
+
+    let child_env = resolved
+        .env
+        .iter()
+        .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)));
+
+    let cfg = buildsched::pipeline::PipelineConfig::simple(
+        &manifest_path,
+        &package,
+        plan.source_dir.join("target"),
+    )
+    .with_child_env(child_env);
+
+    eprintln!("▶ build (sched): buildsched pipeline, package '{package}'");
+    let outcome = buildsched::pipeline::run(cfg)
+        .with_context(|| format!("buildsched pipeline failed for package '{package}'"))?;
+    eprintln!(
+        "▶ build (sched): {}/{} jobs in {:.1}s",
+        outcome.completed_steps,
+        outcome.total_jobs,
+        outcome.elapsed.as_secs_f64()
+    );
+    Ok(true)
+}
+
+/// Extract `[package] name` from a Cargo.toml's contents. `None` for a
+/// virtual workspace manifest (no `[package]` table) or unparseable input.
+#[cfg(feature = "buildsched")]
+fn cargo_package_name(manifest: &str) -> Option<String> {
+    let doc: toml::Value = toml::from_str(manifest).ok()?;
+    Some(doc.get("package")?.get("name")?.as_str()?.to_string())
+}
+
+#[cfg(all(test, feature = "buildsched"))]
+mod sched_tests {
+    use super::cargo_package_name;
+
+    #[test]
+    fn package_manifest_yields_name() {
+        assert_eq!(
+            cargo_package_name("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"),
+            Some("demo".to_string())
+        );
+    }
+
+    #[test]
+    fn virtual_workspace_yields_none() {
+        assert_eq!(cargo_package_name("[workspace]\nmembers = [\"a\", \"b\"]\n"), None);
+    }
+
+    #[test]
+    fn garbage_yields_none() {
+        assert_eq!(cargo_package_name("not toml {{{"), None);
+    }
 }
 
 /// Run a GUI command against a fresh Xvfb X server, sandboxed via `bwrap`
