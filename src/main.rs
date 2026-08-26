@@ -1503,6 +1503,44 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
     })
 }
 
+/// Confirm a PID from a stale-able `deploy.pid` is still THIS herd's deploy
+/// process before signalling it. If the deploy died uncleanly the pidfile is
+/// left behind and the PID may have been recycled by the kernel for an
+/// unrelated process — signalling blindly would kill the wrong thing. Reads
+/// /proc/<pid>/cmdline and requires a `buckets herd deploy` signature.
+fn is_herd_deploy_pid(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
+        Ok(cmdline) => {
+            // argv is NUL-separated; join to a single string for substring checks.
+            let joined: String = cmdline.split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
+            joined.contains("buckets") && joined.contains("herd") && joined.contains("deploy")
+        }
+        Err(_) => false, // no /proc entry -> the process is gone, pidfile is stale
+    }
+}
+
+/// Read a `deploy.pid` file if present and parseable; `None` otherwise.
+fn read_deploy_pid(pid_path: &std::path::Path) -> Option<i32> {
+    let content = std::fs::read_to_string(pid_path).ok()?;
+    content.trim().parse::<i32>().ok()
+}
+
+/// SIGKILL every replica PID recorded in a herd's state.json, then remove the
+/// herd state dir. Last-resort cleanup when the deploy process didn't tear
+/// itself down within the wait window.
+fn force_remove_herd(herds_dir: &std::path::Path, name: &str, state_path: &std::path::Path) {
+    if let Ok(content) = std::fs::read_to_string(state_path) {
+        if let Ok(state) = serde_json::from_str::<herd::HerdState>(&content) {
+            for inst in &state.instances {
+                if let Some(inst_pid) = inst.pid {
+                    unsafe { libc::kill(inst_pid as libc::pid_t, libc::SIGKILL); }
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(herds_dir.join(name));
+}
+
 /// Manage persistent sessions: start, exec, stop, list.
 fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()> {
     match cmd {
@@ -1747,10 +1785,12 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                 anyhow::bail!("Herd '{name}' not found");
             }
             let pid_path = herds_dir.join(&name).join("deploy.pid");
-            if pid_path.exists() {
-                let pid_str = std::fs::read_to_string(&pid_path)
-                    .with_context(|| format!("Failed to read deploy.pid for herd '{name}'"))?;
-                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            if let Some(pid) = read_deploy_pid(&pid_path) {
+                // Guard against a stale pidfile: if the deploy died uncleanly,
+                // the kernel may have recycled this PID for an unrelated
+                // process. Only signal when /proc confirms it's still a
+                // `buckets herd deploy`.
+                if is_herd_deploy_pid(pid) {
                     unsafe { libc::kill(pid, libc::SIGTERM); }
                     eprintln!("▶ stopping herd '{name}' (signaling deploy PID {pid})");
                     // Wait for the deploy process to clean up replicas + state dir.
@@ -1762,26 +1802,17 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                     }
                     if herds_dir.join(&name).exists() {
                         eprintln!("⚠ herd '{name}' state dir still exists after 5s — force-removing");
-                        let state: herd::HerdState =
-                            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap_or_default()).unwrap_or_else(|_| herd::HerdState {
-                                spec: herd::HerdSpec { name: name.clone(), bucket: String::new(), command: vec![], env: std::collections::HashMap::new(), replicas: 0, net: None, check_interval_secs: 5, restart: herd::RestartPolicy::default(), max_restarts: 10 },
-                                instances: vec![],
-                            });
-                        for inst in &state.instances {
-                            if let Some(inst_pid) = inst.pid {
-                                unsafe { libc::kill(inst_pid as libc::pid_t, libc::SIGKILL); }
-                            }
-                        }
-                        let _ = std::fs::remove_dir_all(herds_dir.join(&name));
+                        force_remove_herd(&herds_dir, &name, &state_path);
                     }
                     eprintln!("✓ herd '{name}' stopped");
                     return Ok(());
                 }
+                eprintln!("⚠ deploy.pid {pid} is stale (not a buckets herd deploy) — falling back to killing replicas directly");
             }
-            // Fallback: no PID file — kill replicas directly and remove state.
+            // Fallback: no live deploy process — kill replicas directly.
             let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
-            eprintln!("▶ stopping herd '{name}' (no deploy.pid — killing replicas directly)");
+            eprintln!("▶ stopping herd '{name}' (no live deploy process — killing replicas directly)");
             for inst in &state.instances {
                 if let Some(pid) = inst.pid {
                     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }

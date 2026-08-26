@@ -411,6 +411,11 @@ mod tests {
     /// binds_at_path — the destination differs from the source. Before this
     /// fix, session.rs appended --bind AFTER sandboxed_command()'s -- sep,
     /// so bwrap never saw it.
+    ///
+    /// The ordering assertion (`pos < sep`) is the load-bearing part: the
+    /// original defect was NOT a wrong flag, it was a flag placed AFTER the
+    /// `--` program separator. Asserting only that `--bind` exists with the
+    /// right src/dest would pass even if the loop regressed below `--`.
     #[test]
     fn binds_at_path_emits_bind_with_distinct_dest() {
         let src = PathBuf::from("/tmp/buckets-session-s123");
@@ -423,6 +428,8 @@ mod tests {
         let pos = args.iter().position(|a| a == "--bind").expect("--bind present");
         assert_eq!(args[pos + 1], "/tmp/buckets-session-s123");
         assert_eq!(args[pos + 2], "/session/");
+        let sep = args.iter().position(|a| a == "--").expect("-- separator present");
+        assert!(pos < sep, "bind must precede -- (the original bug)");
     }
 
     #[test]

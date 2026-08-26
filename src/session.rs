@@ -43,6 +43,10 @@ pub struct SessionConfig {
     pub overlay_upper: String,
     pub overlay_work: String,
     pub upper_is_tmpfs: bool,
+    /// Kept for config back-compat with SessionConfig files written before the
+    /// `--zram` flag was removed (it was a no-op — never provisioned a zram
+    /// device). Always written `false` now; never read for behavior, only for
+    /// display in `session list`.
     pub upper_is_zram: bool,
     pub specs: Vec<String>,
     pub toolchain_dirs: Vec<String>,
