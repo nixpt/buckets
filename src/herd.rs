@@ -205,6 +205,12 @@ impl HerdController {
 
         ctrl.persist_state()?;
 
+        // Write PID file so `buckets herd stop` (a separate process) can
+        // signal this deploy process to trigger clean shutdown.
+        let pid = std::process::id();
+        fs::write(state_dir.join("deploy.pid"), pid.to_string())
+            .context("Failed to write deploy.pid")?;
+
         eprintln!("✓ herd '{}' running ({} replicas)", spec.name, spec.replicas);
         Ok(ctrl)
     }
@@ -253,7 +259,9 @@ impl HerdController {
     }
 
     /// Run the reconciliation loop on the calling thread (blocks until stopped).
-    /// Call this in a background thread.
+    /// Call this in a background thread. Each tick polls `desired_replicas`
+    /// so `buckets herd scale` (a separate process) can hot-scale the herd
+    /// without needing an IPC socket.
     pub fn run_reconciler(self: &Arc<Self>, stop_signal: Arc<std::sync::atomic::AtomicBool>) {
         eprintln!("▶ reconciler for herd '{}' started", self.name);
 
@@ -272,11 +280,36 @@ impl HerdController {
                 break;
             }
 
+            // Poll desired_replicas for live hot-scale from `herd scale`.
+            self.poll_desired_replicas();
+
             self.reconcile_tick();
             let _ = self.persist_state();
         }
 
         eprintln!("▶ reconciler for herd '{}' stopped", self.name);
+    }
+
+    /// Read `desired_replicas` and apply it if it differs from the current
+    /// count. Written by `buckets herd scale` from a separate process.
+    fn poll_desired_replicas(&self) {
+        let path = self.state_dir.join("desired_replicas");
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(desired) = content.trim().parse::<u32>() else {
+            return;
+        };
+        let current = {
+            let s = self.state.lock().unwrap();
+            s.spec.replicas
+        };
+        if desired != current {
+            eprintln!("↕ herd '{}' scaling {} → {}", self.name, current, desired);
+            let _ = self.scale(desired);
+        }
+        // Remove the file so the next scale command re-triggers cleanly.
+        let _ = std::fs::remove_file(&path);
     }
 
     fn reconcile_tick(&self) {
@@ -426,6 +459,7 @@ impl HerdController {
             eprintln!("  ✓ replica {idx} stopped");
         }
         drop(s);
+        let _ = fs::remove_file(self.state_dir.join("deploy.pid"));
         let _ = fs::remove_dir_all(&self.state_dir);
         eprintln!("✓ herd '{}' stopped", self.name);
         Ok(())

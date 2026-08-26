@@ -276,10 +276,6 @@ enum Command {
         /// VNC password (default: no password).
         #[arg(long)]
         vnc_password: Option<String>,
-
-        /// Serve a noVNC web UI alongside the VNC server.
-        #[arg(long)]
-        web: bool,
     },
 
     /// Run a browser against a URL with a real, OS-enforced per-origin
@@ -540,11 +536,7 @@ enum SessionCommand {
         #[arg(long)]
         tmpfs: bool,
 
-        /// Use zram for the overlay upper dir (compressed RAM)
-        #[arg(long)]
-        zram: bool,
-
-        /// Size for tmpfs/zram backing (e.g. "2G", "512M"). Default: "4G"
+        /// Size for tmpfs backing (e.g. "2G", "512M"). Default: "4G"
         #[arg(long)]
         size: Option<String>,
     },
@@ -629,8 +621,8 @@ fn main() -> Result<()> {
             cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, &config, &index)
         }
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
-        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password, web } => {
-            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, vnc_port, vnc_password.as_deref(), web, &config, &index)
+        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password } => {
+            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, vnc_port, vnc_password.as_deref(), &config, &index)
         }
         Command::Site { url, browser_bin, extra_args, gui, incognito, width, height, screenshot, timeout, no_network, no_sandbox } => {
             cmd_site(&url, browser_bin.as_deref(), &extra_args, gui, incognito, width, height, screenshot.as_deref(), timeout, no_network, no_sandbox, &config)
@@ -723,6 +715,7 @@ fn cmd_run(
             project_dir: Some(cwd.clone()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
             extra_rw_binds: Vec::new(),
+            binds_at_path: Vec::new(),
             allow_network: false,
             net_ns: net_ns.clone(),
         };
@@ -849,6 +842,7 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &C
             project_dir: Some(cwd.clone()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
             extra_rw_binds: Vec::new(),
+            binds_at_path: Vec::new(),
             allow_network: false,
             net_ns: None,
         };
@@ -1261,6 +1255,7 @@ fn run_project_step(
             project_dir: Some(project_dir.to_path_buf()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
             extra_rw_binds: Vec::new(),
+            binds_at_path: Vec::new(),
             allow_network: true,
             net_ns: None,
         };
@@ -1293,7 +1288,6 @@ fn cmd_gui(
     no_sandbox: bool,
     vnc_port: Option<u16>,
     vnc_password: Option<&str>,
-    _web: bool,
     config: &Config,
     index: &Index,
 ) -> Result<()> {
@@ -1334,6 +1328,7 @@ fn cmd_gui(
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
             extra_rw_binds: Vec::new(),
+            binds_at_path: Vec::new(),
             allow_network: false,
             net_ns: None,
         };
@@ -1452,6 +1447,7 @@ fn cmd_site(
             project_dir: Some(target.storage_dir.clone()),
             extra_ro_binds,
             extra_rw_binds: Vec::new(),
+            binds_at_path: Vec::new(),
             allow_network: !no_network,
             net_ns: None,
         };
@@ -1510,12 +1506,12 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 /// Manage persistent sessions: start, exec, stop, list.
 fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()> {
     match cmd {
-        SessionCommand::Start { specs, command, tmpfs, zram, size } => {
+        SessionCommand::Start { specs, command, tmpfs, size } => {
             if specs.is_empty() {
                 anyhow::bail!("At least one spec is required (e.g. 'node@20')");
             }
             let session_id = session::session_start(
-                &specs, &command, tmpfs, zram, size.as_deref(), config, index
+                &specs, &command, tmpfs, size.as_deref(), config, index
             )?;
             println!("{session_id}");
             Ok(())
@@ -1727,14 +1723,21 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             Ok(())
         }
 
-        HerdSubcommand::Scale { name, replicas: _ } => {
+        HerdSubcommand::Scale { name, replicas } => {
             let state_path = herds_dir.join(&name).join("state.json");
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found");
             }
-            eprintln!("⚠ Live hot-scale requires the herd's controlling process.");
-            eprintln!("  Stop and re-deploy with the new --replicas value for now.");
-            eprintln!("  (IPC-based hot-scale is planned for a future release)");
+            let pid_path = herds_dir.join(&name).join("deploy.pid");
+            if !pid_path.exists() {
+                eprintln!("⚠ No live deploy process found for herd '{name}'.");
+                eprintln!("  Stop and re-deploy with the new --replicas value.");
+                return Ok(());
+            }
+            let desired_path = herds_dir.join(&name).join("desired_replicas");
+            std::fs::write(&desired_path, replicas.to_string())
+                .with_context(|| format!("Failed to write desired_replicas for herd '{name}'"))?;
+            eprintln!("↕ herd '{name}' scaling to {replicas} replicas (reconciler will pick up within one check interval)");
             Ok(())
         }
 
@@ -1743,9 +1746,42 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found");
             }
+            let pid_path = herds_dir.join(&name).join("deploy.pid");
+            if pid_path.exists() {
+                let pid_str = std::fs::read_to_string(&pid_path)
+                    .with_context(|| format!("Failed to read deploy.pid for herd '{name}'"))?;
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    unsafe { libc::kill(pid, libc::SIGTERM); }
+                    eprintln!("▶ stopping herd '{name}' (signaling deploy PID {pid})");
+                    // Wait for the deploy process to clean up replicas + state dir.
+                    for _ in 0..50 {
+                        if !herds_dir.join(&name).exists() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    if herds_dir.join(&name).exists() {
+                        eprintln!("⚠ herd '{name}' state dir still exists after 5s — force-removing");
+                        let state: herd::HerdState =
+                            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap_or_default()).unwrap_or_else(|_| herd::HerdState {
+                                spec: herd::HerdSpec { name: name.clone(), bucket: String::new(), command: vec![], env: std::collections::HashMap::new(), replicas: 0, net: None, check_interval_secs: 5, restart: herd::RestartPolicy::default(), max_restarts: 10 },
+                                instances: vec![],
+                            });
+                        for inst in &state.instances {
+                            if let Some(inst_pid) = inst.pid {
+                                unsafe { libc::kill(inst_pid as libc::pid_t, libc::SIGKILL); }
+                            }
+                        }
+                        let _ = std::fs::remove_dir_all(herds_dir.join(&name));
+                    }
+                    eprintln!("✓ herd '{name}' stopped");
+                    return Ok(());
+                }
+            }
+            // Fallback: no PID file — kill replicas directly and remove state.
             let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
-            eprintln!("▶ stopping herd '{name}'");
+            eprintln!("▶ stopping herd '{name}' (no deploy.pid — killing replicas directly)");
             for inst in &state.instances {
                 if let Some(pid) = inst.pid {
                     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }

@@ -33,6 +33,11 @@ pub struct SandboxProfile {
     pub extra_ro_binds: Vec<PathBuf>,
     /// Additional read-write binds for building/caching.
     pub extra_rw_binds: Vec<PathBuf>,
+    /// Binds that redirect a host path to a different destination inside
+    /// the sandbox: (host_source, sandbox_dest). Used by session.rs to
+    /// bind the overlay mount at `/session/` — the destination differs
+    /// from the source, which `extra_rw_binds` cannot express.
+    pub binds_at_path: Vec<(PathBuf, String)>,
     /// Build commands generally need their package registry (crates.io,
     /// npm, ...); plain `run`/`shell` default to no network.
     pub allow_network: bool,
@@ -194,6 +199,13 @@ fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
         a.push(s);
     }
 
+    for (src, dest) in &profile.binds_at_path {
+        let s = src.to_string_lossy().to_string();
+        a.push("--bind".into());
+        a.push(s);
+        a.push(dest.clone());
+    }
+
     a.push("--chdir".into());
     a.push(cwd.to_string_lossy().to_string());
 
@@ -221,6 +233,12 @@ fn build_proot_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
         let s = bind.to_string_lossy().to_string();
         a.push("-b".into());
         a.push(format!("{}:{}", s, s));
+    }
+
+    for (src, dest) in &profile.binds_at_path {
+        let s = src.to_string_lossy().to_string();
+        a.push("-b".into());
+        a.push(format!("{}:{}", s, dest));
     }
 
     for bind in &profile.extra_ro_binds {
@@ -387,6 +405,24 @@ mod tests {
         assert_eq!(args[len - 3], "node");
         assert_eq!(args[len - 2], "-e");
         assert_eq!(args[len - 1], "1+1");
+    }
+
+    /// Regression test: session.rs binds the overlay at /session/ via
+    /// binds_at_path — the destination differs from the source. Before this
+    /// fix, session.rs appended --bind AFTER sandboxed_command()'s -- sep,
+    /// so bwrap never saw it.
+    #[test]
+    fn binds_at_path_emits_bind_with_distinct_dest() {
+        let src = PathBuf::from("/tmp/buckets-session-s123");
+        let dest = "/session/";
+        let profile = SandboxProfile {
+            binds_at_path: vec![(src.clone(), dest.to_string())],
+            ..Default::default()
+        };
+        let args = build_bwrap_args("echo", &[], Path::new("/tmp"), &profile);
+        let pos = args.iter().position(|a| a == "--bind").expect("--bind present");
+        assert_eq!(args[pos + 1], "/tmp/buckets-session-s123");
+        assert_eq!(args[pos + 2], "/session/");
     }
 
     #[test]

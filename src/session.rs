@@ -252,7 +252,6 @@ pub fn session_start(
     specs: &[String],
     command: &[String],
     use_tmpfs: bool,
-    use_zram: bool,
     size: Option<&str>,
     config: &Config,
     index: &crate::index::Index,
@@ -316,7 +315,7 @@ pub fn session_start(
         overlay_upper: upper_str.to_string(),
         overlay_work: work_str.to_string(),
         upper_is_tmpfs: use_tmpfs,
-        upper_is_zram: use_zram,
+        upper_is_zram: false,
         specs: specs.to_vec(),
         toolchain_dirs,
         pid: None,
@@ -329,7 +328,6 @@ pub fn session_start(
 
         let env = env::compose_env(&resolved.installations);
 
-        let session_mount = mount_pt.to_string_lossy().to_string();
         let extra_ro_binds: Vec<PathBuf> = resolved
             .installations
             .iter()
@@ -340,14 +338,12 @@ pub fn session_start(
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
             extra_rw_binds: Vec::new(),
+            binds_at_path: vec![(mount_pt.clone(), "/session/".to_string())],
             allow_network: false,
             net_ns: None,
         };
 
         let mut child = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);
-
-        // Also bind the overlay mount at /session/ inside the sandbox
-        child.arg("--bind").arg(&session_mount).arg("/session/");
 
         child.stdin(std::process::Stdio::inherit());
         child.stdout(std::process::Stdio::inherit());
@@ -372,9 +368,7 @@ pub fn session_start(
     // Save session config
     save_session(config, &cfg)?;
 
-    let backing_desc = if use_zram {
-        "zram".to_string()
-    } else if use_tmpfs {
+    let backing_desc = if use_tmpfs {
         format!("tmpfs({})", size.unwrap_or("4G"))
     } else {
         "disk".to_string()
@@ -429,7 +423,6 @@ pub fn session_exec(
     let env = env::compose_env(&installations);
 
     let cwd = std::env::current_dir()?;
-    let session_mount = cfg.mount_point.clone();
 
     let extra_ro_binds: Vec<PathBuf> = cfg
         .toolchain_dirs
@@ -441,21 +434,15 @@ pub fn session_exec(
         project_dir: Some(cwd.clone()),
         extra_ro_binds,
         extra_rw_binds: Vec::new(),
+        binds_at_path: vec![
+            (PathBuf::from(&cfg.mount_point), "/session/".to_string()),
+            (PathBuf::from(&cfg.overlay_upper), "/session-upper/".to_string()),
+        ],
         allow_network: false,
         net_ns: None,
     };
 
     let mut cmd = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);
-
-    // Bind the overlay mount at /session/ inside the sandbox
-    cmd.arg("--bind")
-        .arg(&session_mount)
-        .arg("/session/");
-
-    // Bind the session upper dir at /session-upper/ for direct file access
-    cmd.arg("--ro-bind")
-        .arg(&cfg.overlay_upper)
-        .arg("/session-upper/");
 
     // Capture output
     let output = cmd
