@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod cellar;
 mod config;
@@ -504,6 +504,11 @@ enum WorktreeCommand {
         /// Base branch/commit to branch from (default: repo's current HEAD).
         #[arg(long)]
         from: Option<String>,
+        /// Create the worktree exactly here (BUCKETS-17). Default: inside the
+        /// repo at `.jagent/worktrees/<branch>` when the repo has `.jagent/`,
+        /// else `$BUCKETS_WORKTREE_DIR/<repo>-<branch>`, else a sibling.
+        #[arg(long)]
+        path: Option<PathBuf>,
     },
 
     /// Remove a worktree, and its branch if it's merged (git's own `git
@@ -1686,8 +1691,14 @@ fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()
 
 fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {
     match cmd {
-        WorktreeCommand::Create { repo, branch, from } => {
-            let path = worktree::create(Path::new(&repo), &branch, from.as_deref(), config.worktree_dir.as_deref())?;
+        WorktreeCommand::Create { repo, branch, from, path } => {
+            let path = worktree::create_at(
+                Path::new(&repo),
+                &branch,
+                from.as_deref(),
+                config.worktree_dir.as_deref(),
+                path.as_deref(),
+            )?;
             println!("{}", path.display());
             Ok(())
         }
