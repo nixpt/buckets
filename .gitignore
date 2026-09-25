@@ -52,3 +52,6 @@ id_ecdsa*
 credentials*.json
 .netrc
 secrets.json
+
+# agent worktrees live inside the repo (squadron SQ-204)
+.jagent/worktrees/
