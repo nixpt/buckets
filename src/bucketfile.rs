@@ -215,6 +215,7 @@ pub fn build_bucketfile(
                     project_dir: Some(workspace_path.to_path_buf()),
                     extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
                     extra_rw_binds: vec![target_dir.clone()],
+                    binds_at_path: Vec::new(),
                     allow_network: true,
                     net_ns: None,
                 };
