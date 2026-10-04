@@ -1,8 +1,8 @@
 # Planning state — buckets
 
-**Updated:** 2026-07-16T15:28:00-05:00
-**Milestone focus:** M4 — Fleet Concurrency & Optimization (see ROADMAP.md, TASKS.md)
-**Branch:** `agent/antigravity/BUCKETS-7`
+**Updated:** 2026-07-25T02:43:40-05:00
+**Milestone focus:** Close M2 (BUCKETS-3 Termux); M3/M4 largely shipped (see ROADMAP.md, TASKS.md)
+**Branch:** `agent/nixp/BUCKETS-14` — PR https://github.com/nixpt/buckets/pull/3
 
 ## Delivery snapshot
 
@@ -22,13 +22,14 @@
 | Local Path Spec Support | **shipped** | `path:<local-path>` specs — detects the build system (Cargo/Go/npm/generic) and compiles+caches a local project's binaries for sandboxed execution. |
 | **buck-herd** | **shipped** | Mandala-pattern fleet orchestration (`buckets herd deploy/ls/status/scale/stop`), health polling + exponential-backoff auto-restart. |
 | **buckets clean** | **shipped** | Cache eviction command (`buckets clean --older-than <duration>`). |
-| **BUCKETS-12** | **In Progress** | HerdController in-process API wiring: `snapshot`/`stop` wired into deploy shutdown via Arc-share. `scale` deferred (needs IPC). Ls displays instance counts. |
+| **BUCKETS-12** | **Done** | HerdController `snapshot`/`stop` wired into deploy shutdown via Arc-share. |
+| **BUCKETS-14** | **Done** | Unix-socket IPC: live hot-scale + IPC stop/status. `control.sock` under herd state dir. |
 
 ---
 
 ## Active work
 
-Current focus is on M4 (Fleet Concurrency) — herd shipped, `buckets clean` shipped. BUCKETS-12 in progress: `snapshot`/`stop` wired into deploy shutdown via Arc-share, `scale` deferred (needs IPC). Next open: BUCKETS-3 (Android/Termux PRoot verification).
+M4 herd IPC complete. Next open: BUCKETS-3 (Android/Termux), buck-net expose_port live-test.
 
 ---
 
@@ -43,11 +44,11 @@ _None known._
 | Metric | Value |
 |--------|--------|
 | Total crates | 1 (Standalone binary + library) |
-| Tests passed | **188** (85 lib tests + 89 binary tests + 14 herd tests) |
+| Tests passed | **196** (96 lib + 100 binary unit tests; modules counted in both targets) |
 | Tests failed | 0 |
 | Tests ignored | 0 |
-| Warnings | 0 (BUCKETS-12: `scale` kept as `#[allow(dead_code)]` — needs IPC for live hot-scale) |
-| Composed features | CLI running, bwrap sandboxing, Xvfb GUI, surfer Site browser, Git worktree, herd, clean |
+| Warnings | 0 |
+| Composed features | CLI running, bwrap sandboxing, Xvfb GUI, surfer Site browser, Git worktree, herd+IPC, clean |
 | Cache location | `~/.cache/squadron-buckets` |
 | Build time (from clean) | ~15s (debug) |
 | Release binary size | ~1.5MB (stripped + LTO) |
@@ -57,9 +58,9 @@ _None known._
 
 ## Next 3 (from TASKS.md, priority order)
 
-1. **BUCKETS-12 (HerdController in-process API)**: `snapshot`/`stop` wired into deploy shutdown via Arc-share. `scale` deferred (needs IPC). Next: live hot-scale via Unix socket IPC.
-2. **Android/Termux Verification**: Verify PRoot behavior and Yama ptrace policy under Termux (BUCKETS-3).
-3. **buck-net expose_port live-test**: socat/nsenter port forwarding has zero live-test coverage.
+1. **Merge PR #3** (BUCKETS-14 herd IPC) — then continue from master.
+2. **BUCKETS-3 (Android/Termux Verification)**: Verify PRoot behavior and Yama ptrace policy under Termux.
+3. **buck-net expose_port live-test** / CLAUDE.md test-count hygiene.
 
 ---
 

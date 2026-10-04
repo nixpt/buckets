@@ -1,14 +1,15 @@
 # Handoff
 
-Updated: 2026-07-18T12:00:00-05:00
+Updated: 2026-07-25T02:43:40-05:00
 
 ## Summary
-Docs-herd-hygiene branch: BUCKETS-12 in progress — `snapshot`/`stop` wired into deploy shutdown via Arc-share + Arc::try_unwrap, deduplicated inline kill loop. `scale` kept as `#[allow(dead_code)]` (needs IPC). Ls displays instance counts. Build zero warnings, 188 tests pass.
+BUCKETS-14 complete and pushed as PR #3. Planning memory (.dejavue/.jagent) refreshed to match: M3 done, M4 herd+IPC done, M2 blocked on Termux (BUCKETS-3).
 
 ## Next Steps
-- BUCKETS-3 (Android/Termux PRoot verification) — next open ticket in TASKS.md
-- BUCKETS-12 follow-up: live hot-scale via Unix socket IPC
-- buck-net's expose_port (socat/nsenter) has zero live-test coverage
+- Foreman: merge https://github.com/nixpt/buckets/pull/3 when ready
+- BUCKETS-3 — Android/Termux PRoot verification on phone-claude
+- buck-net expose_port live-test (socat/nsenter)
+- CLAUDE.md test-count hygiene
 
 ## Boot Instructions
 Read `.dejavue/handoff.md`, `.dejavue/state.md`, `.dejavue/decisions.md`, and `.dejavue/timeline.jsonl` before making changes.
