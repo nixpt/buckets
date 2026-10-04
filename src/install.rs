@@ -222,6 +222,137 @@ fn install_cargo(config: &Config, pkg: &Package) -> Result<Installation> {
     })
 }
 
+fn which_bin(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        for dir in std::env::split_paths(&paths) {
+            let p = dir.join(name);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        None
+    })
+}
+
+fn write_installed_marker(target_dir: &Path, source: &str, name: &str, version: &str) -> Result<()> {
+    fs::write(
+        target_dir.join(cellar::INSTALLED_MARKER),
+        format!("source={source}\npkg={name}\nver={version}\n"),
+    )
+    .with_context(|| format!("Failed to write install marker in {}", target_dir.display()))
+}
+
+/// Install a PyPI package via `uv pip install --target` (preferred) or
+/// `python -m pip install --target`. Layout matches Flame's historical
+/// lang cellar so a later flame thin-adapter can bind the same tree.
+fn install_pypi(config: &Config, pkg: &Package) -> Result<Installation> {
+    let version_str = dist_version_string(&pkg.version);
+    let target_dir = config.version_dir(&pkg.project, &version_str);
+    let name = pkg
+        .project
+        .strip_prefix("pypi:")
+        .context("Missing pypi: prefix")?;
+
+    eprintln!("↓ installing pypi package {name}=={version_str}...");
+
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir)
+            .with_context(|| format!("Failed to clean {}", target_dir.display()))?;
+    }
+    fs::create_dir_all(&target_dir)
+        .with_context(|| format!("Failed to create {}", target_dir.display()))?;
+
+    let requirement = format!("{name}=={version_str}");
+    pypi_install_target(&requirement, &target_dir)?;
+    write_installed_marker(&target_dir, "pypi", name, &version_str)?;
+    cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
+
+    eprintln!("✓ cached pypi package {} v{}", pkg.project, version_str);
+    Ok(Installation {
+        pkg: pkg.clone(),
+        path: target_dir,
+    })
+}
+
+fn pypi_install_target(requirement: &str, target: &Path) -> Result<()> {
+    if which_bin("uv").is_some() {
+        let status = std::process::Command::new("uv")
+            .args(["pip", "install", "--target"])
+            .arg(target)
+            .arg("--python")
+            .arg("python3")
+            .arg(requirement)
+            .status()
+            .context("Failed to spawn uv")?;
+        if status.success() {
+            return Ok(());
+        }
+        bail!("uv pip install exited {status}");
+    }
+
+    let py = if which_bin("python3").is_some() {
+        "python3"
+    } else if which_bin("python").is_some() {
+        "python"
+    } else {
+        bail!("need `uv` or `python3`/`pip` on PATH for pypi: packages");
+    };
+    let status = std::process::Command::new(py)
+        .args(["-m", "pip", "install", "--target"])
+        .arg(target)
+        .arg(requirement)
+        .status()
+        .with_context(|| format!("Failed to spawn {py} -m pip"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("pip install exited {status}");
+    }
+}
+
+/// Install an npm package via `npm install --prefix`.
+fn install_npm(config: &Config, pkg: &Package) -> Result<Installation> {
+    let version_str = dist_version_string(&pkg.version);
+    let target_dir = config.version_dir(&pkg.project, &version_str);
+    let name = pkg
+        .project
+        .strip_prefix("npm:")
+        .context("Missing npm: prefix")?;
+
+    if which_bin("npm").is_none() {
+        bail!("npm not on PATH — required for npm: packages");
+    }
+
+    eprintln!("↓ installing npm package {name}@{version_str}...");
+
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir)
+            .with_context(|| format!("Failed to clean {}", target_dir.display()))?;
+    }
+    fs::create_dir_all(&target_dir)
+        .with_context(|| format!("Failed to create {}", target_dir.display()))?;
+
+    let req = format!("{name}@{version_str}");
+    let status = std::process::Command::new("npm")
+        .args(["install", "--prefix"])
+        .arg(&target_dir)
+        .arg(&req)
+        .status()
+        .context("Failed to spawn npm")?;
+    if !status.success() {
+        bail!("npm install exited {status}");
+    }
+
+    write_installed_marker(&target_dir, "npm", name, &version_str)?;
+    cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
+
+    eprintln!("✓ cached npm package {} v{}", pkg.project, version_str);
+    Ok(Installation {
+        pkg: pkg.clone(),
+        path: target_dir,
+    })
+}
+
 fn map_download_ureq_error(err: ureq::Error, url: &str, project: &str) -> anyhow::Error {
     match err {
         ureq::Error::Status(404, _) => {
@@ -259,6 +390,12 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     }
     if pkg.project.starts_with("cargo:") {
         return install_cargo(config, pkg);
+    }
+    if pkg.project.starts_with("pypi:") {
+        return install_pypi(config, pkg);
+    }
+    if pkg.project.starts_with("npm:") {
+        return install_npm(config, pkg);
     }
     let version_str = dist_version_string(&pkg.version);
     let project_dir = config.project_dir(&pkg.project);
@@ -548,5 +685,87 @@ edition = "2021"
             .unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert_eq!(stdout.trim(), "hello from pantry override!");
+    }
+
+    #[test]
+    fn test_install_pypi_six() {
+        if which_bin("uv").is_none() && which_bin("python3").is_none() {
+            eprintln!("skip pypi install: no uv/python3");
+            return;
+        }
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.cache_dir = tempdir.path().to_path_buf();
+
+        let pkg = Package {
+            project: "pypi:six".into(),
+            version: semver::Version::new(1, 16, 0),
+        };
+        let inst = install(&config, &pkg).expect("install pypi:six");
+        assert!(inst.path.join(cellar::INSTALLED_MARKER).is_file());
+        assert!(
+            cellar::is_installed(&config, "pypi:six", &pkg.version),
+            "marker should count as installed"
+        );
+        // pip --target lays out the package module at the root
+        assert!(
+            inst.path.join("six.py").is_file() || inst.path.join("six").is_dir(),
+            "expected six module under {}",
+            inst.path.display()
+        );
+
+        let env = crate::env::compose_env(&[inst]);
+        assert!(
+            env.get("PYTHONPATH").is_some_and(|p| p.contains(tempdir.path().to_str().unwrap())),
+            "PYTHONPATH should include cellar, got {:?}",
+            env.get("PYTHONPATH")
+        );
+    }
+
+    #[test]
+    fn test_install_npm_is_number() {
+        if which_bin("npm").is_none() {
+            eprintln!("skip npm install: no npm");
+            return;
+        }
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.cache_dir = tempdir.path().to_path_buf();
+
+        let pkg = Package {
+            project: "npm:is-number".into(),
+            version: semver::Version::new(7, 0, 0),
+        };
+        let inst = install(&config, &pkg).expect("install npm:is-number");
+        assert!(inst.path.join(cellar::INSTALLED_MARKER).is_file());
+        assert!(inst.path.join("node_modules").join("is-number").is_dir());
+
+        let env = crate::env::compose_env(&[inst]);
+        assert!(
+            env.get("NODE_PATH").is_some_and(|p| p.contains("node_modules")),
+            "NODE_PATH should include node_modules, got {:?}",
+            env.get("NODE_PATH")
+        );
+    }
+
+    #[test]
+    fn test_resolve_multi_pypi_and_npm() {
+        if which_bin("uv").is_none() && which_bin("python3").is_none() {
+            return;
+        }
+        if which_bin("npm").is_none() {
+            return;
+        }
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.cache_dir = tempdir.path().to_path_buf();
+        let index = crate::index::Index::builtin();
+
+        let specs = vec!["pypi:six@1.16.0".into(), "npm:is-number@7.0.0".into()];
+        let resolved = crate::resolve::resolve_multi(&specs, &config, &index)
+            .expect("resolve_multi lang specs");
+        assert_eq!(resolved.installations.len(), 2);
+        assert!(resolved.env.contains_key("PYTHONPATH"));
+        assert!(resolved.env.contains_key("NODE_PATH"));
     }
 }

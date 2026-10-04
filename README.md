@@ -47,6 +47,11 @@ buckets run rust@latest -- rustc --version
 buckets run node@20 python@3.11 -- node -e "console.log('and python is at', process.env.PATH)"
 buckets run go@1.22 cmake@latest -- go version
 
+# Language registries (BUCKETS-15) — install into the shared cellar
+buckets run pypi:six@1.16 -- python3 -c "import six; print(six.__version__)"
+buckets run npm:is-number@7 -- node -e "console.log(require('is-number')(3))"
+buckets env pypi:requests@2.31 npm:is-number@7   # PYTHONPATH + NODE_PATH
+
 # Open an interactive shell with the runtime in PATH
 buckets shell node@20
 buckets shell python@3.11 --shell /bin/zsh
@@ -130,6 +135,20 @@ buckets site https://example.com
 buckets site https://example.com --gui --screenshot /tmp/site.png --timeout 5
 buckets site https://example.com --incognito   # ephemeral storage, removed on exit
 ```
+
+## Admission-controlled builds (`--sched`)
+
+`buckets build <dir> --sched` routes a cargo build through
+[buildsched](../buildsched)'s admission-controlled pipeline (`bob`): per-crate
+jobs gated on memory watermarks, PSI pressure, and disk headroom instead of one
+monolithic `cargo build`. Opt-in at compile time — the `buildsched` cargo
+feature (OFF by default, `cargo build --features buildsched`) adds a path dep
+on the sibling buildsched repo; the default build stays fully self-contained.
+Cargo projects with a single `[package]` only: virtual workspaces and non-cargo
+projects print a one-line notice and fall back to the normal build path. Sched
+builds always run unsandboxed (the pipeline spawns its own cargo subprocess
+tree, which can't live inside the per-command bwrap wrap); the bucket toolchain
+env is still injected into every pipeline subprocess.
 
 ## Real process isolation
 

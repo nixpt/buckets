@@ -12,9 +12,15 @@ use std::path::PathBuf;
 use crate::config::Config;
 use crate::types::{dist_version_string, Installation, Package};
 
+/// Marker written by lang-registry installs (`pypi:` / `npm:`) that may not
+/// produce a `bin/` directory (pure libraries). Bottle / cargo installs still
+/// use the `bin/` existence check.
+pub const INSTALLED_MARKER: &str = ".buckets-installed";
+
 /// Check if a specific version of a project is already installed in cache.
 pub fn is_installed(config: &Config, project: &str, version: &Version) -> bool {
-    config.version_dir(project, &dist_version_string(version)).join("bin").exists()
+    let dir = config.version_dir(project, &dist_version_string(version));
+    dir.join("bin").exists() || dir.join(INSTALLED_MARKER).exists()
 }
 
 /// List all installed versions of a project, sorted newest-first.

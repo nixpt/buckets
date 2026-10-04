@@ -105,4 +105,8 @@ Rejected alternatives:
 
 Outcome:
 serve_control + send_control shipped; live smoke verified scale 1→2 and IPC stop; scale no longer allow(dead_code)
+## 2026-08-03T17:24:22-05:00 — BUCKETS-16: --sched via opt-in buildsched cargo feature (default OFF)
+
+Reason:
+okd-core[compute] shape keeps the default build peer-dep-free (cargo tree: 0 buildsched; buildsched carries an absolute-path zpu dep that only resolves on fleet boxes). Sched builds always unsandboxed — the pipeline spawns its own cargo subprocess tree, outside the per-command bwrap wrap. Toolchain env routed via PipelineConfig::with_child_env (pipeline's CARGO_TARGET_DIR/CARGO_BUILD_JOBS win on conflict, BSC-12 precedence); virtual workspaces / non-cargo projects fall back to plain cargo build with one honest line.
 

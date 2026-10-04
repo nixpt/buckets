@@ -30,6 +30,9 @@ Bridge the distribution gap for Rust-based tools by downloading and building the
 - [x] **BUCKETS-4** (L): **Cargo Spec Type Engine** — Implement parsing, version resolving, fetching, building, and caching cargo packages (e.g. `buckets run cargo:crush-ast@0.2.0`).
 - [x] **BUCKETS-8** (M): **Local Path Spec Support** — Support running local project source code directly in buckets via a `path:` spec prefix (e.g. `path:.`).
 - [x] **BUCKETS-5** (M): **Local Pantry Overrides** — Create configuration to override package distributions with local directories or custom manifests.
+- [x] **BUCKETS-15** (L): **PyPI + npm Spec Resolvers** — `pypi:<pkg>[@ver]` / `npm:<pkg>[@ver]` via registry APIs → shared cellar + PYTHONPATH/NODE_PATH. Unlocks flame thin-delegation (FLAME-026). See `tickets/BUCKETS-15-pypi-npm-specs.md`.
+- [x] **BUCKETS-16** (M): **`buckets build --sched` via buildsched** — route cargo builds through buildsched's admission-controlled pipeline (memory/PSI/disk gating). Opt-in `buildsched` cargo feature (default OFF, okd-core[compute] shape — default build stays peer-dep-free); non-cargo/virtual-workspace fall back to the normal path; sched builds run unsandboxed with the bucket toolchain env injected via `with_child_env`. = buildsched's BSC-5. See `tickets/BUCKETS-16-sched-builds.md`.  _(antigravity, 2026-08-03)_
+- [x] **BUCKETS-17** (S): **`buckets worktree create --path <dir>` + in-repo default** — explicit `--path` wins; else `BUCKETS_WORKTREE_DIR`; else a repo with `.jagent/` gets `<main checkout>/.jagent/worktrees/<branch>` with `../X` sibling links (port of squadron `worktree_link_siblings`); else the old sibling default. 4 tests.
 
 ---
 
