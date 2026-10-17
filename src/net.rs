@@ -68,7 +68,8 @@ impl NetSession {
         if state_dir.exists() {
             bail!(
                 "Buck-net '{}' already exists — use 'buckets net rm {}' to remove it first.",
-                name, name
+                name,
+                name
             );
         }
 
@@ -90,7 +91,14 @@ impl NetSession {
         // --net:  fresh network namespace inside the user namespace
         // sleep infinity: keeps the namespace alive; we store its PID
         let keeper = Command::new("unshare")
-            .args(["--user", "--map-root-user", "--net", "--", "sleep", "infinity"])
+            .args([
+                "--user",
+                "--map-root-user",
+                "--net",
+                "--",
+                "sleep",
+                "infinity",
+            ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -122,7 +130,10 @@ impl NetSession {
         fs::create_dir_all(&state_dir)
             .with_context(|| format!("Failed to create net state dir: {}", state_dir.display()))?;
 
-        let info = NetInfo { name: name.to_string(), keeper_pid };
+        let info = NetInfo {
+            name: name.to_string(),
+            keeper_pid,
+        };
         fs::write(
             state_dir.join("info.json"),
             serde_json::to_string_pretty(&info)?,
@@ -133,7 +144,11 @@ impl NetSession {
         std::mem::forget(keeper);
 
         eprintln!("✓ buck-net '{name}' ready (keeper PID: {keeper_pid})");
-        Ok(Self { name: name.to_string(), keeper_pid, state_dir })
+        Ok(Self {
+            name: name.to_string(),
+            keeper_pid,
+            state_dir,
+        })
     }
 
     /// Reattach to a named buck-net session from a previous `buckets net create`.
@@ -160,7 +175,11 @@ impl NetSession {
             );
         }
 
-        Ok(Self { name: info.name, keeper_pid: info.keeper_pid, state_dir })
+        Ok(Self {
+            name: info.name,
+            keeper_pid: info.keeper_pid,
+            state_dir,
+        })
     }
 
     /// Path to the network namespace fd — pass this to bwrap's `--netns` flag.
@@ -176,9 +195,14 @@ impl NetSession {
     /// Kill the keeper process and remove persisted state.
     pub fn destroy(self) -> Result<()> {
         eprintln!("▶ stopping buck-net '{}'", self.name);
-        let _ = Command::new("kill").arg(self.keeper_pid.to_string()).status();
+        let _ = Command::new("kill")
+            .arg(self.keeper_pid.to_string())
+            .status();
         fs::remove_dir_all(&self.state_dir).with_context(|| {
-            format!("Failed to remove net state dir: {}", self.state_dir.display())
+            format!(
+                "Failed to remove net state dir: {}",
+                self.state_dir.display()
+            )
         })?;
         eprintln!("✓ buck-net '{}' removed", self.name);
         Ok(())
@@ -203,7 +227,9 @@ impl NetSession {
         );
 
         let child = Command::new("socat")
-            .arg(format!("TCP-LISTEN:{host_port},fork,reuseaddr,bind=127.0.0.1"))
+            .arg(format!(
+                "TCP-LISTEN:{host_port},fork,reuseaddr,bind=127.0.0.1"
+            ))
             .arg(format!("EXEC:\"{exec_cmd}\""))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -223,7 +249,9 @@ impl NetSession {
         if !nets_dir.exists() {
             return vec![];
         }
-        let Ok(entries) = fs::read_dir(nets_dir) else { return vec![] };
+        let Ok(entries) = fs::read_dir(nets_dir) else {
+            return vec![];
+        };
 
         let mut result = Vec::new();
         for entry in entries.flatten() {
@@ -231,8 +259,12 @@ impl NetSession {
                 continue;
             }
             let info_path = entry.path().join("info.json");
-            let Ok(content) = fs::read_to_string(&info_path) else { continue };
-            let Ok(info) = serde_json::from_str::<NetInfo>(&content) else { continue };
+            let Ok(content) = fs::read_to_string(&info_path) else {
+                continue;
+            };
+            let Ok(info) = serde_json::from_str::<NetInfo>(&content) else {
+                continue;
+            };
 
             if pid_alive(info.keeper_pid) {
                 result.push(info);
@@ -304,7 +336,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let net_dir = dir.path().join("my-net");
         fs::create_dir_all(&net_dir).unwrap();
-        let info = NetInfo { name: "my-net".to_string(), keeper_pid: 999_999 };
+        let info = NetInfo {
+            name: "my-net".to_string(),
+            keeper_pid: 999_999,
+        };
         fs::write(
             net_dir.join("info.json"),
             serde_json::to_string(&info).unwrap(),

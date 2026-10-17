@@ -54,7 +54,10 @@ impl XvfbSession {
         let display_number = find_free_display()?;
         let display = format!(":{display_number}");
 
-        let xauthority = std::env::temp_dir().join(format!("buckets-gui-{display_number}-{}.xauth", std::process::id()));
+        let xauthority = std::env::temp_dir().join(format!(
+            "buckets-gui-{display_number}-{}.xauth",
+            std::process::id()
+        ));
         std::fs::File::create(&xauthority)
             .with_context(|| format!("Failed to create {}", xauthority.display()))?;
 
@@ -63,8 +66,12 @@ impl XvfbSession {
             bail!("mcookie produced an empty cookie");
         }
         let status = Command::new("xauth")
-            .arg("-f").arg(&xauthority)
-            .arg("add").arg(&display).arg(".").arg(&cookie)
+            .arg("-f")
+            .arg(&xauthority)
+            .arg("add")
+            .arg(&display)
+            .arg(".")
+            .arg(&cookie)
             .status()
             .context("Failed to run xauth add")?;
         if !status.success() {
@@ -74,8 +81,11 @@ impl XvfbSession {
         eprintln!("▶ starting Xvfb {display} ({width}x{height}x{depth})");
         let child = Command::new("Xvfb")
             .arg(&display)
-            .arg("-screen").arg("0").arg(format!("{width}x{height}x{depth}"))
-            .arg("-auth").arg(&xauthority)
+            .arg("-screen")
+            .arg("0")
+            .arg(format!("{width}x{height}x{depth}"))
+            .arg("-auth")
+            .arg(&xauthority)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -83,7 +93,12 @@ impl XvfbSession {
 
         wait_for_socket(display_number)?;
 
-        Ok(Self { display, xauthority, display_number, child })
+        Ok(Self {
+            display,
+            xauthority,
+            display_number,
+            child,
+        })
     }
 
     /// The single X11 socket file to bind into the sandbox — deliberately
@@ -103,8 +118,10 @@ impl XvfbSession {
         let status = Command::new("import")
             .env("DISPLAY", &self.display)
             .env("XAUTHORITY", &self.xauthority)
-            .arg("-display").arg(&self.display)
-            .arg("-window").arg("root")
+            .arg("-display")
+            .arg(&self.display)
+            .arg("-window")
+            .arg("root")
             .arg(output)
             .status()
             .context("Failed to run import (ImageMagick)")?;
@@ -119,12 +136,16 @@ impl XvfbSession {
     /// alive for the duration of the session).
     pub fn start_vnc(&self, port: u16, password: Option<&str>) -> Result<Child> {
         if which("x11vnc").is_none() {
-            bail!("'x11vnc' not found on PATH — install it for VNC support (e.g. apt install x11vnc)");
+            bail!(
+                "'x11vnc' not found on PATH — install it for VNC support (e.g. apt install x11vnc)"
+            );
         }
 
         let mut cmd = Command::new("x11vnc");
-        cmd.arg("-display").arg(&self.display)
-            .arg("-rfbport").arg(port.to_string())
+        cmd.arg("-display")
+            .arg(&self.display)
+            .arg("-rfbport")
+            .arg(port.to_string())
             .arg("-forever")
             .arg("-shared")
             .arg("-noipv6")
@@ -140,7 +161,8 @@ impl XvfbSession {
             cmd.arg("-nopw");
         }
 
-        let child = cmd.spawn()
+        let child = cmd
+            .spawn()
             .with_context(|| format!("Failed to spawn x11vnc on port {port}"))?;
 
         eprintln!("▶ x11vnc running on port {port} for {}", self.display);
@@ -158,7 +180,10 @@ impl Drop for XvfbSession {
         // if it doesn't exit in time, then remove the socket ourselves
         // regardless, as a backstop.
         let pid = self.child.id();
-        let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
         let exited = (0..20).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(50));
             matches!(self.child.try_wait(), Ok(Some(_)))
@@ -207,12 +232,16 @@ fn wait_for_socket(display_number: u32) -> Result<()> {
 
 fn which(bin: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|dir| dir.join(bin)).find(|p| p.is_file())
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(bin))
+            .find(|p| p.is_file())
     })
 }
 
 fn run_capture(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program).args(args).output()
+    let output = Command::new(program)
+        .args(args)
+        .output()
         .with_context(|| format!("Failed to run {program}"))?;
     if !output.status.success() {
         bail!("{program} exited {}", output.status.code().unwrap_or(1));

@@ -48,7 +48,11 @@ impl SiteTarget {
             (dir, false)
         };
 
-        Ok(Self { host, storage_dir, is_temp })
+        Ok(Self {
+            host,
+            storage_dir,
+            is_temp,
+        })
     }
 }
 
@@ -77,36 +81,60 @@ mod tests {
     #[test]
     fn resolve_extracts_host() {
         let cache = tempfile::tempdir().unwrap();
-        let target = SiteTarget::resolve("https://example.com/page", &fake_config(cache.path().to_path_buf()), false).unwrap();
+        let target = SiteTarget::resolve(
+            "https://example.com/page",
+            &fake_config(cache.path().to_path_buf()),
+            false,
+        )
+        .unwrap();
         assert_eq!(target.host, "example.com");
     }
 
     #[test]
     fn resolve_extracts_host_with_port() {
         let cache = tempfile::tempdir().unwrap();
-        let target = SiteTarget::resolve("http://localhost:8080/", &fake_config(cache.path().to_path_buf()), false).unwrap();
+        let target = SiteTarget::resolve(
+            "http://localhost:8080/",
+            &fake_config(cache.path().to_path_buf()),
+            false,
+        )
+        .unwrap();
         assert_eq!(target.host, "localhost");
     }
 
     #[test]
     fn resolve_extracts_ipv6_host() {
         let cache = tempfile::tempdir().unwrap();
-        let target = SiteTarget::resolve("http://[::1]:8080/", &fake_config(cache.path().to_path_buf()), false).unwrap();
+        let target = SiteTarget::resolve(
+            "http://[::1]:8080/",
+            &fake_config(cache.path().to_path_buf()),
+            false,
+        )
+        .unwrap();
         assert_eq!(target.host, "[::1]");
     }
 
     #[test]
     fn resolve_rejects_invalid_url() {
         let cache = tempfile::tempdir().unwrap();
-        let result = SiteTarget::resolve("not a url", &fake_config(cache.path().to_path_buf()), false);
+        let result =
+            SiteTarget::resolve("not a url", &fake_config(cache.path().to_path_buf()), false);
         assert!(result.is_err());
     }
 
     #[test]
     fn persistent_storage_dir_is_host_keyed_under_cache_dir() {
         let cache = tempfile::tempdir().unwrap();
-        let target = SiteTarget::resolve("https://example.com", &fake_config(cache.path().to_path_buf()), false).unwrap();
-        assert_eq!(target.storage_dir, cache.path().join("sites").join("example.com"));
+        let target = SiteTarget::resolve(
+            "https://example.com",
+            &fake_config(cache.path().to_path_buf()),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            target.storage_dir,
+            cache.path().join("sites").join("example.com")
+        );
         assert!(target.storage_dir.exists());
     }
 
@@ -114,7 +142,12 @@ mod tests {
     fn persistent_storage_dir_survives_drop() {
         let cache = tempfile::tempdir().unwrap();
         let dir = {
-            let target = SiteTarget::resolve("https://example.com", &fake_config(cache.path().to_path_buf()), false).unwrap();
+            let target = SiteTarget::resolve(
+                "https://example.com",
+                &fake_config(cache.path().to_path_buf()),
+                false,
+            )
+            .unwrap();
             target.storage_dir.clone()
         };
         assert!(dir.exists());
@@ -124,7 +157,12 @@ mod tests {
     fn incognito_storage_dir_removed_on_drop() {
         let cache = tempfile::tempdir().unwrap();
         let dir = {
-            let target = SiteTarget::resolve("https://example.com", &fake_config(cache.path().to_path_buf()), true).unwrap();
+            let target = SiteTarget::resolve(
+                "https://example.com",
+                &fake_config(cache.path().to_path_buf()),
+                true,
+            )
+            .unwrap();
             assert!(target.storage_dir.exists());
             target.storage_dir.clone()
         };

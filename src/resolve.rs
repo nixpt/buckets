@@ -29,7 +29,11 @@ pub fn resolve(spec: &str, config: &Config, index: &Index) -> Result<ResolvedEnv
 ///    can itself have companions) and deduplicated across specs
 /// 2. Installs all packages
 /// 3. Composes a unified environment with all installations
-pub fn resolve_multi(specs: &[String], config: &Config, index: &Index) -> Result<ResolvedEnvironment> {
+pub fn resolve_multi(
+    specs: &[String],
+    config: &Config,
+    index: &Index,
+) -> Result<ResolvedEnvironment> {
     if specs.is_empty() {
         bail!("At least one spec is required");
     }
@@ -49,7 +53,10 @@ pub fn resolve_multi(specs: &[String], config: &Config, index: &Index) -> Result
         if req.constraint == semver::VersionReq::STAR {
             eprintln!("✓ resolved {}@latest → v{version}", req.project);
         } else {
-            eprintln!("�� resolved {}@{} → v{version}", req.project, req.constraint);
+            eprintln!(
+                "�� resolved {}@{} → v{version}",
+                req.project, req.constraint
+            );
         }
 
         packages.push(Package {
@@ -65,13 +72,16 @@ pub fn resolve_multi(specs: &[String], config: &Config, index: &Index) -> Result
     let env = crate::env::compose_env(&installations);
 
     // The entry package is the first spec's resolved package
-    let entry_project = index.resolve_alias(
-        &PackageReq::parse(&specs[0])
-            .context("Failed to re-parse first spec")?
-            .project
-    ).to_string();
+    let entry_project = index
+        .resolve_alias(
+            &PackageReq::parse(&specs[0])
+                .context("Failed to re-parse first spec")?
+                .project,
+        )
+        .to_string();
 
-    let entry_pkg = packages.iter()
+    let entry_pkg = packages
+        .iter()
         .find(|p| p.project == entry_project)
         .cloned()
         .unwrap_or_else(|| packages[0].clone());
@@ -107,7 +117,9 @@ fn collect_transitive_reqs(specs: &[String], index: &Index) -> Result<Vec<Packag
     let mut queued = std::collections::HashSet::new();
     let mut worklist: std::collections::VecDeque<PackageReq> = specs
         .iter()
-        .map(|spec| PackageReq::parse(spec).with_context(|| format!("Failed to parse spec: {spec}")))
+        .map(|spec| {
+            PackageReq::parse(spec).with_context(|| format!("Failed to parse spec: {spec}"))
+        })
         .collect::<Result<_>>()?;
 
     while let Some(req) = worklist.pop_front() {
@@ -115,7 +127,10 @@ fn collect_transitive_reqs(specs: &[String], index: &Index) -> Result<Vec<Packag
         if !queued.insert(project.clone()) {
             continue;
         }
-        all_reqs.push(PackageReq { project: project.clone(), constraint: req.constraint });
+        all_reqs.push(PackageReq {
+            project: project.clone(),
+            constraint: req.constraint,
+        });
 
         // Companion entries are full specs ("openssl@^1.1", not bare
         // "openssl") so a companion can pin an exact version range — some
@@ -156,8 +171,14 @@ fn install_all(config: &Config, packages: &[Package]) -> Result<Vec<Installation
 
     // Preserve original order
     installations.sort_by(|a, b| {
-        let a_idx = packages.iter().position(|p| p.project == a.pkg.project).unwrap_or(0);
-        let b_idx = packages.iter().position(|p| p.project == b.pkg.project).unwrap_or(0);
+        let a_idx = packages
+            .iter()
+            .position(|p| p.project == a.pkg.project)
+            .unwrap_or(0);
+        let b_idx = packages
+            .iter()
+            .position(|p| p.project == b.pkg.project)
+            .unwrap_or(0);
         a_idx.cmp(&b_idx)
     });
 
@@ -165,7 +186,11 @@ fn install_all(config: &Config, packages: &[Package]) -> Result<Vec<Installation
 }
 
 /// Resolve the best matching version for a project: cache first, then remote.
-fn resolve_version(config: &Config, project: &str, constraint: &semver::VersionReq) -> Result<semver::Version> {
+fn resolve_version(
+    config: &Config,
+    project: &str,
+    constraint: &semver::VersionReq,
+) -> Result<semver::Version> {
     // 1. Check local cache for a matching version
     if let Some(cached) = cellar::best_installed(config, project, constraint) {
         return Ok(cached);
@@ -177,7 +202,8 @@ fn resolve_version(config: &Config, project: &str, constraint: &semver::VersionR
             Some(v) => return Ok(v),
             None => bail!(
                 "No versions found for '{}' on dist server ({})",
-                project, config.dist_url
+                project,
+                config.dist_url
             ),
         }
     }
@@ -201,7 +227,9 @@ fn resolve_version(config: &Config, project: &str, constraint: &semver::VersionR
             bail!(
                 "No version of '{}' matches constraint '{}' on dist server.\n\
                  Available versions: {}",
-                project, constraint, available
+                project,
+                constraint,
+                available
             )
         }
     }
@@ -209,8 +237,7 @@ fn resolve_version(config: &Config, project: &str, constraint: &semver::VersionR
 
 /// Show info about what a spec would resolve to (without installing).
 pub fn info(spec: &str, config: &Config, index: &Index) -> Result<()> {
-    let req = PackageReq::parse(spec)
-        .with_context(|| format!("Failed to parse spec: {spec}"))?;
+    let req = PackageReq::parse(spec).with_context(|| format!("Failed to parse spec: {spec}"))?;
     let project = index.resolve_alias(&req.project);
 
     println!("spec:        {spec}");
@@ -219,7 +246,13 @@ pub fn info(spec: &str, config: &Config, index: &Index) -> Result<()> {
 
     // Check cache
     let cached = cellar::best_installed(config, project, &req.constraint);
-    println!("cached:      {}", cached.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "none".into()));
+    println!(
+        "cached:      {}",
+        cached
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".into())
+    );
 
     // Check remote
     match inventory::best_match(config, project, &req.constraint) {
@@ -284,7 +317,8 @@ mod tests {
         // dedup happens (exactly one entry), not which constraint wins.
         // See collect_transitive_reqs's doc comment: that's a known,
         // unresolved limitation, not something this test claims is correct.
-        let reqs = collect_transitive_reqs(&["rust".to_string(), "curl".to_string()], &index).unwrap();
+        let reqs =
+            collect_transitive_reqs(&["rust".to_string(), "curl".to_string()], &index).unwrap();
         let openssl_count = reqs.iter().filter(|r| r.project == "openssl.org").count();
         assert_eq!(openssl_count, 1, "{reqs:?}");
     }

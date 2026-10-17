@@ -43,6 +43,9 @@ buckets run node@20 -- script.js --flag arg
 buckets run python@3.11 -- python3 -c "print('hello from a bucket')"
 buckets run rust@latest -- rustc --version
 
+# Strict evaluation protocol for practice environments (JSON result)
+buckets eval --project ./work rust@latest -- cargo test
+
 # Multi-package environments
 buckets run node@20 python@3.11 -- node -e "console.log('and python is at', process.env.PATH)"
 buckets run go@1.22 cmake@latest -- go version
@@ -139,6 +142,10 @@ else on the host is. Network is off by default for `run`/`shell` (most
 tool invocations don't need it) and on for `build` (package registries
 do). Falls back to a plain unsandboxed subprocess with a warning if
 `bwrap` isn't installed — use `--no-sandbox` to opt out explicitly.
+
+`eval` is stricter than the general-purpose commands: it is network-disabled,
+captures stdout/stderr, enforces a timeout, emits one JSON result, and refuses
+to run when `bwrap` is unavailable.
 
 ## Real GUI isolation
 

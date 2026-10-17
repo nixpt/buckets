@@ -20,24 +20,24 @@
 //! CLI (`main.rs`, via [`index::Index`] for alias resolution) execs or
 //! prints it.
 
+pub mod bucketfile;
 pub mod cellar;
 pub mod config;
 pub mod env;
 pub mod gui;
+pub mod herd;
 pub mod index;
 pub mod install;
 pub mod inventory;
+pub mod net;
 pub mod project;
 pub mod resolve;
 pub mod sandbox;
 pub mod site;
 pub mod types;
 pub mod worktree;
-pub mod bucketfile;
-pub mod net;
-pub mod herd;
 
 pub use config::Config;
 pub use index::Index;
 pub use resolve::resolve;
-pub use types::{Package, PackageReq, ResolvedEnvironment, Installation};
+pub use types::{Installation, Package, PackageReq, ResolvedEnvironment};

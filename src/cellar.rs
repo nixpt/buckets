@@ -14,7 +14,10 @@ use crate::types::{dist_version_string, Installation, Package};
 
 /// Check if a specific version of a project is already installed in cache.
 pub fn is_installed(config: &Config, project: &str, version: &Version) -> bool {
-    config.version_dir(project, &dist_version_string(version)).join("bin").exists()
+    config
+        .version_dir(project, &dist_version_string(version))
+        .join("bin")
+        .exists()
 }
 
 /// List all installed versions of a project, sorted newest-first.
@@ -49,7 +52,11 @@ pub fn list_installed(config: &Config, project: &str) -> Vec<Version> {
 }
 
 /// Find the best installed version matching a constraint.
-pub fn best_installed(config: &Config, project: &str, constraint: &semver::VersionReq) -> Option<Version> {
+pub fn best_installed(
+    config: &Config,
+    project: &str,
+    constraint: &semver::VersionReq,
+) -> Option<Version> {
     list_installed(config, project)
         .into_iter()
         .find(|v| constraint.matches(v))
@@ -93,7 +100,10 @@ pub fn update_version_symlinks(config: &Config, project: &str, installed: &Versi
 
     // Find the latest version matching this major.minor
     let minor = installed.minor;
-    if let Some(latest_minor) = all_versions.iter().find(|v| v.major == major && v.minor == minor) {
+    if let Some(latest_minor) = all_versions
+        .iter()
+        .find(|v| v.major == major && v.minor == minor)
+    {
         create_symlink(&project_dir, &format!("v{major}.{minor}"), latest_minor)?;
     }
 
@@ -112,8 +122,12 @@ fn create_symlink(project_dir: &PathBuf, name: &str, version: &Version) -> Resul
     }
 
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&target, &link_path)
-        .with_context(|| format!("Failed to create symlink {} → {target}", link_path.display()))?;
+    std::os::unix::fs::symlink(&target, &link_path).with_context(|| {
+        format!(
+            "Failed to create symlink {} → {target}",
+            link_path.display()
+        )
+    })?;
 
     #[cfg(windows)]
     {
@@ -141,7 +155,10 @@ pub fn resolve_symlink(config: &Config, project: &str, alias: &str) -> Option<Ve
 /// a project (to avoid repeated network requests).
 #[allow(dead_code)]
 pub fn has_lookup_tombstone(config: &Config, project: &str) -> bool {
-    config.project_dir(project).join(".no-such-project").exists()
+    config
+        .project_dir(project)
+        .join(".no-such-project")
+        .exists()
 }
 
 /// Mark a project as nonexistent in the distribution server.

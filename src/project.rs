@@ -48,9 +48,9 @@ pub fn resolve_source(input: &str) -> Result<(PathBuf, bool)> {
         Ok((dir, true))
     } else {
         let path = PathBuf::from(input);
-        let canonical = path
-            .canonicalize()
-            .with_context(|| format!("'{input}' is not a git URL and not a local path that exists"))?;
+        let canonical = path.canonicalize().with_context(|| {
+            format!("'{input}' is not a git URL and not a local path that exists")
+        })?;
         Ok((canonical, false))
     }
 }
@@ -69,8 +69,10 @@ fn looks_like_git_url(s: &str) -> bool {
 /// package.json, pyproject.toml/setup.py/requirements.txt, go.mod,
 /// Makefile. `Err` if nothing recognized.
 pub fn detect(source_dir: &Path) -> Result<ProjectPlan> {
-    let base = |toolchain_specs: Vec<String>, build_cmd: Vec<String>,
-                test_cmd: Option<Vec<String>>, run_cmd: Option<Vec<String>>| ProjectPlan {
+    let base = |toolchain_specs: Vec<String>,
+                build_cmd: Vec<String>,
+                test_cmd: Option<Vec<String>>,
+                run_cmd: Option<Vec<String>>| ProjectPlan {
         source_dir: source_dir.to_path_buf(),
         is_temp: false, // caller overwrites from resolve_source's result
         toolchain_specs,
@@ -95,8 +97,12 @@ pub fn detect(source_dir: &Path) -> Result<ProjectPlan> {
         return Ok(base(
             vec![spec],
             vec!["npm".into(), "install".into()],
-            scripts.contains(&"test".to_string()).then(|| vec!["npm".into(), "test".into()]),
-            scripts.contains(&"start".to_string()).then(|| vec!["npm".into(), "start".into()]),
+            scripts
+                .contains(&"test".to_string())
+                .then(|| vec!["npm".into(), "test".into()]),
+            scripts
+                .contains(&"start".to_string())
+                .then(|| vec!["npm".into(), "start".into()]),
         ));
     }
 
@@ -111,7 +117,12 @@ pub fn detect(source_dir: &Path) -> Result<ProjectPlan> {
     if source_dir.join("requirements.txt").exists() {
         return Ok(base(
             vec!["python".into()],
-            vec!["pip".into(), "install".into(), "-r".into(), "requirements.txt".into()],
+            vec![
+                "pip".into(),
+                "install".into(),
+                "-r".into(),
+                "requirements.txt".into(),
+            ],
             None,
             None,
         ));
@@ -155,7 +166,11 @@ fn rust_toolchain_spec(source_dir: &Path) -> String {
                 .find_map(|l| l.trim().strip_prefix("channel").map(str::to_string))
         })
         .and_then(|rest| rest.split('"').nth(1).map(str::to_string))
-        .or_else(|| std::fs::read_to_string(source_dir.join("rust-toolchain")).ok().map(|s| s.trim().to_string()));
+        .or_else(|| {
+            std::fs::read_to_string(source_dir.join("rust-toolchain"))
+                .ok()
+                .map(|s| s.trim().to_string())
+        });
 
     match channel {
         Some(c) if c.chars().next().is_some_and(|ch| ch.is_ascii_digit()) => format!("rust@{c}"),
@@ -174,7 +189,11 @@ fn node_toolchain_spec(source_dir: &Path) -> String {
 /// `package.json`'s `scripts` keys (e.g. does it have a "test"/"start" script).
 fn node_scripts(source_dir: &Path) -> Vec<String> {
     read_json(&source_dir.join("package.json"))
-        .and_then(|v| v.get("scripts")?.as_object().map(|m| m.keys().cloned().collect()))
+        .and_then(|v| {
+            v.get("scripts")?
+                .as_object()
+                .map(|m| m.keys().cloned().collect())
+        })
         .unwrap_or_default()
 }
 
@@ -218,7 +237,11 @@ mod tests {
     fn detects_pinned_rust_toolchain() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Cargo.toml", "[package]\nname = \"x\"\n");
-        write(dir.path(), "rust-toolchain.toml", "[toolchain]\nchannel = \"1.75.0\"\n");
+        write(
+            dir.path(),
+            "rust-toolchain.toml",
+            "[toolchain]\nchannel = \"1.75.0\"\n",
+        );
         let plan = detect(dir.path()).unwrap();
         assert_eq!(plan.toolchain_specs, vec!["rust@1.75.0"]);
     }
@@ -227,7 +250,11 @@ mod tests {
     fn ignores_non_numeric_rust_channel() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Cargo.toml", "[package]\nname = \"x\"\n");
-        write(dir.path(), "rust-toolchain.toml", "[toolchain]\nchannel = \"stable\"\n");
+        write(
+            dir.path(),
+            "rust-toolchain.toml",
+            "[toolchain]\nchannel = \"stable\"\n",
+        );
         let plan = detect(dir.path()).unwrap();
         assert_eq!(plan.toolchain_specs, vec!["rust"]);
     }
@@ -235,11 +262,21 @@ mod tests {
     #[test]
     fn detects_node_project_with_engines_and_scripts() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "package.json", r#"{"engines":{"node":"^20"},"scripts":{"test":"jest","start":"node index.js"}}"#);
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"engines":{"node":"^20"},"scripts":{"test":"jest","start":"node index.js"}}"#,
+        );
         let plan = detect(dir.path()).unwrap();
         assert_eq!(plan.toolchain_specs, vec!["node@^20"]);
-        assert_eq!(plan.test_cmd, Some(vec!["npm".to_string(), "test".to_string()]));
-        assert_eq!(plan.run_cmd, Some(vec!["npm".to_string(), "start".to_string()]));
+        assert_eq!(
+            plan.test_cmd,
+            Some(vec!["npm".to_string(), "test".to_string()])
+        );
+        assert_eq!(
+            plan.run_cmd,
+            Some(vec!["npm".to_string(), "start".to_string()])
+        );
     }
 
     #[test]
@@ -266,7 +303,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "requirements.txt", "requests\n");
         let plan = detect(dir.path()).unwrap();
-        assert_eq!(plan.build_cmd, vec!["pip", "install", "-r", "requirements.txt"]);
+        assert_eq!(
+            plan.build_cmd,
+            vec!["pip", "install", "-r", "requirements.txt"]
+        );
     }
 
     #[test]

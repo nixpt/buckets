@@ -98,14 +98,26 @@ pub fn compose_env(installations: &[Installation]) -> HashMap<String, String> {
     }
 
     prepend_path(&mut env, "PATH", &dedup_ordered(&path_entries));
-    prepend_path(&mut env, "LD_LIBRARY_PATH", &dedup_ordered(&ld_library_path));
+    prepend_path(
+        &mut env,
+        "LD_LIBRARY_PATH",
+        &dedup_ordered(&ld_library_path),
+    );
     prepend_path(&mut env, "CPATH", &dedup_ordered(&cpath));
     prepend_path(&mut env, "MANPATH", &dedup_ordered(&manpath));
     prepend_path(&mut env, "XDG_DATA_DIRS", &dedup_ordered(&xdg_data_dirs));
-    prepend_path(&mut env, "PKG_CONFIG_PATH", &dedup_ordered(&pkg_config_path));
+    prepend_path(
+        &mut env,
+        "PKG_CONFIG_PATH",
+        &dedup_ordered(&pkg_config_path),
+    );
 
     #[cfg(target_os = "macos")]
-    prepend_path(&mut env, "DYLD_FALLBACK_LIBRARY_PATH", &dedup_ordered(&dyld_fallback_path));
+    prepend_path(
+        &mut env,
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        &dedup_ordered(&dyld_fallback_path),
+    );
 
     env
 }
@@ -199,11 +211,15 @@ pub fn format_json(env: &ResolvedEnvironment) -> Result<String, serde_json::Erro
         path: String,
     }
 
-    let packages: Vec<JsonPackage> = env.installations.iter().map(|inst| JsonPackage {
-        project: inst.pkg.project.clone(),
-        version: crate::types::dist_version_string(&inst.pkg.version),
-        path: inst.path.to_string_lossy().to_string(),
-    }).collect();
+    let packages: Vec<JsonPackage> = env
+        .installations
+        .iter()
+        .map(|inst| JsonPackage {
+            project: inst.pkg.project.clone(),
+            version: crate::types::dist_version_string(&inst.pkg.version),
+            path: inst.path.to_string_lossy().to_string(),
+        })
+        .collect();
 
     let output = JsonOutput {
         version: 2,
@@ -248,7 +264,10 @@ mod tests {
         let env = ResolvedEnvironment {
             installations: vec![],
             env: HashMap::from([("PATH".into(), "/a:/b".into())]),
-            entry: Package { project: "test".into(), version: semver::Version::new(1, 0, 0) },
+            entry: Package {
+                project: "test".into(),
+                version: semver::Version::new(1, 0, 0),
+            },
             all_packages: vec![],
         };
         let output = format_shell_exports(&env);

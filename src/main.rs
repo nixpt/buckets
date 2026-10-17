@@ -7,13 +7,17 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::Path;
 
+mod bucketfile;
 mod cellar;
 mod config;
 mod env;
+mod eval;
 mod gui;
+mod herd;
 mod index;
 mod install;
 mod inventory;
+mod net;
 mod project;
 mod resolve;
 mod sandbox;
@@ -21,9 +25,6 @@ mod session;
 mod site;
 mod types;
 mod worktree;
-mod bucketfile;
-mod net;
-mod herd;
 
 use config::Config;
 use index::Index;
@@ -42,7 +43,11 @@ extern "C" fn herd_signal_handler(_sig: libc::c_int) {
 }
 
 #[derive(Parser)]
-#[command(name = "buckets", version, about = "Throwaway runtime buckets for AI agents")]
+#[command(
+    name = "buckets",
+    version,
+    about = "Throwaway runtime buckets for AI agents"
+)]
 struct Cli {
     /// Use a zram-backed cache dir instead of host disk — requires an
     /// already-running `flare-up` session (see `squadron/bin/flare-up`).
@@ -141,6 +146,26 @@ enum Command {
         /// Output as JSON instead of shell exports
         #[arg(short, long)]
         json: bool,
+    },
+
+    /// Run a practice evaluation in a fresh, network-disabled sandbox.
+    ///
+    /// Usage: buckets eval --project ./work rust@latest -- cargo test
+    Eval {
+        /// Writable project directory visible inside the sandbox.
+        #[arg(long)]
+        project: String,
+
+        /// Hard wall-clock limit in seconds.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+
+        /// Runtime spec(s), for example `rust@latest` or `python@3.11`.
+        specs: Vec<String>,
+
+        /// Command to evaluate, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
     },
 
     /// Show resolution info for a spec (no installation).
@@ -430,7 +455,6 @@ enum HerdSubcommand {
     },
 }
 
-
 #[derive(Subcommand)]
 enum NetSubcommand {
     /// Create a named virtual network (persists until 'buckets net rm').
@@ -475,7 +499,6 @@ enum NetSubcommand {
         mapping: String,
     },
 }
-
 
 #[derive(Subcommand)]
 enum WorktreeCommand {
@@ -600,7 +623,12 @@ fn main() -> Result<()> {
     let index = Index::builtin();
 
     match cli.command {
-        Command::Run { specs, command, no_sandbox, net } => {
+        Command::Run {
+            specs,
+            command,
+            no_sandbox,
+            net,
+        } => {
             let nets_dir = config.cache_dir.join("nets");
             let net_ns = if let Some(ref name) = net {
                 let session = net::NetSession::load(name, &nets_dir)?;
@@ -610,23 +638,114 @@ fn main() -> Result<()> {
             };
             cmd_run(&specs, &command, no_sandbox, net_ns, &config, &index)
         }
-        Command::Shell { specs, shell, no_sandbox } => cmd_shell(&specs, shell.as_deref(), no_sandbox, &config, &index),
+        Command::Shell {
+            specs,
+            shell,
+            no_sandbox,
+        } => cmd_shell(&specs, shell.as_deref(), no_sandbox, &config, &index),
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
+        Command::Eval {
+            project,
+            timeout,
+            specs,
+            command,
+        } => {
+            let result = eval::run(
+                Path::new(&project),
+                &specs,
+                &command,
+                timeout,
+                &config,
+                &index,
+            )?;
+            println!("{}", serde_json::to_string(&result)?);
+            if result.passed {
+                Ok(())
+            } else {
+                anyhow::bail!("evaluation failed")
+            }
+        }
         Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
-        Command::Clean { spec, all, older_than, dry_run } => {
-            cmd_clean(&config, spec.as_deref(), all, older_than.as_deref(), dry_run)
-        }
-        Command::Build { path_or_url, bucketfile, tag, test, run, no_sandbox } => {
-            cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, &config, &index)
-        }
+        Command::Clean {
+            spec,
+            all,
+            older_than,
+            dry_run,
+        } => cmd_clean(
+            &config,
+            spec.as_deref(),
+            all,
+            older_than.as_deref(),
+            dry_run,
+        ),
+        Command::Build {
+            path_or_url,
+            bucketfile,
+            tag,
+            test,
+            run,
+            no_sandbox,
+        } => cmd_build(
+            &path_or_url,
+            bucketfile.as_deref(),
+            tag.as_deref(),
+            test,
+            run,
+            no_sandbox,
+            &config,
+            &index,
+        ),
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
-        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password } => {
-            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, vnc_port, vnc_password.as_deref(), &config, &index)
-        }
-        Command::Site { url, browser_bin, extra_args, gui, incognito, width, height, screenshot, timeout, no_network, no_sandbox } => {
-            cmd_site(&url, browser_bin.as_deref(), &extra_args, gui, incognito, width, height, screenshot.as_deref(), timeout, no_network, no_sandbox, &config)
-        }
+        Command::Gui {
+            specs,
+            command,
+            screenshot,
+            timeout,
+            width,
+            height,
+            no_sandbox,
+            vnc_port,
+            vnc_password,
+        } => cmd_gui(
+            &specs,
+            &command,
+            screenshot.as_deref(),
+            timeout,
+            width,
+            height,
+            no_sandbox,
+            vnc_port,
+            vnc_password.as_deref(),
+            &config,
+            &index,
+        ),
+        Command::Site {
+            url,
+            browser_bin,
+            extra_args,
+            gui,
+            incognito,
+            width,
+            height,
+            screenshot,
+            timeout,
+            no_network,
+            no_sandbox,
+        } => cmd_site(
+            &url,
+            browser_bin.as_deref(),
+            &extra_args,
+            gui,
+            incognito,
+            width,
+            height,
+            screenshot.as_deref(),
+            timeout,
+            no_network,
+            no_sandbox,
+            &config,
+        ),
         Command::Session(cmd) => cmd_session(cmd, &config, &index),
         Command::Net(cmd) => cmd_net(cmd, &config),
         Command::Herd(cmd) => cmd_herd(cmd, &config),
@@ -656,7 +775,9 @@ fn cmd_run(
             let meta_path = inst.path.join("metadata.json");
             if meta_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&meta_path) {
-                    if let Ok(meta) = serde_json::from_str::<crate::bucketfile::BucketMetadata>(&content) {
+                    if let Ok(meta) =
+                        serde_json::from_str::<crate::bucketfile::BucketMetadata>(&content)
+                    {
                         bucket_workspace_path = Some(inst.path.join("workspace"));
                         metadata = Some(meta);
                         break;
@@ -674,16 +795,20 @@ fn cmd_run(
         // strings (e.g. `node -e "console.log(1)"`) preserves the
         // quotes as part of the actual arguments rather than passing
         // literal quote characters through to the runtime.
-        let entrypoint_parts: Vec<String> = shlex::split(&meta.entrypoint)
-            .ok_or_else(|| anyhow::anyhow!(
+        let entrypoint_parts: Vec<String> = shlex::split(&meta.entrypoint).ok_or_else(|| {
+            anyhow::anyhow!(
                 "Failed to shell-split ENTRYPOINT in bucket metadata: '{}'",
                 meta.entrypoint
-            ))?;
-        let (ep_program, ep_args) = entrypoint_parts.split_first()
+            )
+        })?;
+        let (ep_program, ep_args) = entrypoint_parts
+            .split_first()
             .context("Empty entrypoint in local bucket metadata")?;
         (ep_program.clone(), ep_args.to_vec())
     } else {
-        anyhow::bail!("No command specified. Use 'buckets run <spec> -- <command>' or 'buckets shell <spec>'");
+        anyhow::bail!(
+            "No command specified. Use 'buckets run <spec> -- <command>' or 'buckets shell <spec>'"
+        );
     };
 
     let program = &program_str;
@@ -713,7 +838,11 @@ fn cmd_run(
         };
         let profile = sandbox::SandboxProfile {
             project_dir: Some(cwd.clone()),
-            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            extra_ro_binds: resolved
+                .installations
+                .iter()
+                .map(|i| i.path.clone())
+                .collect(),
             extra_rw_binds: Vec::new(),
             binds_at_path: Vec::new(),
             allow_network: false,
@@ -738,7 +867,9 @@ fn cmd_run(
     } else {
         eprintln!("▶ running in {bucket_name} bucket");
     }
-    let status = cmd.status().with_context(|| format!("Failed to execute {program}"))?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("Failed to execute {program}"))?;
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -780,9 +911,18 @@ fn cmd_net(cmd: NetSubcommand, config: &Config) -> Result<()> {
             Ok(())
         }
 
-        NetSubcommand::Run { name, specs, command, no_sandbox } => {
+        NetSubcommand::Run {
+            name,
+            specs,
+            command,
+            no_sandbox,
+        } => {
             let session = net::NetSession::load(&name, &nets_dir)?;
-            let net_ns = if no_sandbox { None } else { Some(session.ns_path()) };
+            let net_ns = if no_sandbox {
+                None
+            } else {
+                Some(session.ns_path())
+            };
             // Re-use cmd_run; we need a fake Index so pull it here
             let index = crate::index::Index::builtin();
             cmd_run(&specs, &command, no_sandbox, net_ns, config, &index)
@@ -803,7 +943,9 @@ fn cmd_net(cmd: NetSubcommand, config: &Config) -> Result<()> {
 fn parse_port_mapping(s: &str) -> Result<(u16, u16)> {
     let parts: Vec<&str> = s.splitn(2, ':').collect();
     if parts.len() != 2 {
-        anyhow::bail!("Invalid port mapping '{s}': expected host_port:bucket_port (e.g. 8080:3000)");
+        anyhow::bail!(
+            "Invalid port mapping '{s}': expected host_port:bucket_port (e.g. 8080:3000)"
+        );
     }
     let host_port: u16 = parts[0]
         .parse()
@@ -814,9 +956,14 @@ fn parse_port_mapping(s: &str) -> Result<(u16, u16)> {
     Ok((host_port, bucket_port))
 }
 
-fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
+fn cmd_shell(
+    specs: &[String],
+    shell: Option<&str>,
+    no_sandbox: bool,
+    config: &Config,
+    index: &Index,
+) -> Result<()> {
     if specs.is_empty() {
-
         anyhow::bail!("At least one spec is required (e.g. 'node@20')");
     }
 
@@ -840,7 +987,11 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &C
         let cwd = std::env::current_dir()?;
         let profile = sandbox::SandboxProfile {
             project_dir: Some(cwd.clone()),
-            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            extra_ro_binds: resolved
+                .installations
+                .iter()
+                .map(|i| i.path.clone())
+                .collect(),
             extra_rw_binds: Vec::new(),
             binds_at_path: Vec::new(),
             allow_network: false,
@@ -851,7 +1002,10 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &C
 
     cmd.env("BUCKET_PROMPT", &bucket_prompt);
     if shell_program.contains("bash") || shell_program.contains("zsh") {
-        cmd.env("PS1", format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "));
+        cmd.env(
+            "PS1",
+            format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "),
+        );
     }
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -908,7 +1062,10 @@ fn cmd_info(specs: &[String], config: &Config, index: &Index) -> Result<()> {
 fn cmd_list(config: &Config) -> Result<()> {
     let cache_dir = &config.cache_dir;
     if !cache_dir.exists() {
-        println!("No cached installations (cache dir: {})", cache_dir.display());
+        println!(
+            "No cached installations (cache dir: {})",
+            cache_dir.display()
+        );
         return Ok(());
     }
 
@@ -957,7 +1114,13 @@ fn cmd_list(config: &Config) -> Result<()> {
 
 /// Remove cached installations to reclaim disk space (see `Command::Clean`
 /// doc comment for the usage shapes).
-fn cmd_clean(config: &Config, spec: Option<&str>, all: bool, older_than: Option<&str>, dry_run: bool) -> Result<()> {
+fn cmd_clean(
+    config: &Config,
+    spec: Option<&str>,
+    all: bool,
+    older_than: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
     if spec.is_some() && all {
         anyhow::bail!("--all and a spec are mutually exclusive — pass one or the other");
     }
@@ -973,7 +1136,10 @@ fn cmd_clean(config: &Config, spec: Option<&str>, all: bool, older_than: Option<
 
     let cache_dir = &config.cache_dir;
     if !cache_dir.exists() {
-        println!("No cached installations (cache dir: {}).", cache_dir.display());
+        println!(
+            "No cached installations (cache dir: {}).",
+            cache_dir.display()
+        );
         return Ok(());
     }
 
@@ -1021,7 +1187,9 @@ fn cmd_clean(config: &Config, spec: Option<&str>, all: bool, older_than: Option<
             let path = config.version_dir(&project, &ver_str);
             if let Some(max_age) = max_age {
                 let mtime = std::fs::metadata(&path)?.modified()?;
-                let age = std::time::SystemTime::now().duration_since(mtime).unwrap_or_default();
+                let age = std::time::SystemTime::now()
+                    .duration_since(mtime)
+                    .unwrap_or_default();
                 if age < max_age {
                     continue;
                 }
@@ -1033,16 +1201,29 @@ fn cmd_clean(config: &Config, spec: Option<&str>, all: bool, older_than: Option<
     }
 
     if candidates.is_empty() {
-        println!("Nothing to clean{}.", older_than.map(|d| format!(" older than {d}")).unwrap_or_default());
+        println!(
+            "Nothing to clean{}.",
+            older_than
+                .map(|d| format!(" older than {d}"))
+                .unwrap_or_default()
+        );
         return Ok(());
     }
 
     let total: u64 = candidates.iter().map(|(_, _, _, s)| *s).sum();
     let verb = if dry_run { "Would remove" } else { "Removing" };
     for (project, ver, path, size) in &candidates {
-        println!("  {verb} {project}@{ver}  ({})  {}", human_size(*size), path.display());
+        println!(
+            "  {verb} {project}@{ver}  ({})  {}",
+            human_size(*size),
+            path.display()
+        );
     }
-    println!("{verb} {} total across {} version(s).", human_size(total), candidates.len());
+    println!(
+        "{verb} {} total across {} version(s).",
+        human_size(total),
+        candidates.len()
+    );
 
     if dry_run {
         return Ok(());
@@ -1050,7 +1231,8 @@ fn cmd_clean(config: &Config, spec: Option<&str>, all: bool, older_than: Option<
 
     let mut touched_projects: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (project, _, path, _) in &candidates {
-        std::fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))?;
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
         touched_projects.insert(project.clone());
     }
 
@@ -1137,14 +1319,16 @@ fn parse_duration(s: &str) -> Result<std::time::Duration> {
         anyhow::bail!("empty --older-than value — expected e.g. '30d', '12h', '2w'");
     }
     let (num_str, unit) = s.split_at(s.len() - 1);
-    let num: u64 = num_str
-        .parse()
-        .with_context(|| format!("invalid --older-than value '{s}' — expected e.g. '30d', '12h', '2w'"))?;
+    let num: u64 = num_str.parse().with_context(|| {
+        format!("invalid --older-than value '{s}' — expected e.g. '30d', '12h', '2w'")
+    })?;
     let secs = match unit {
         "h" => num * 3600,
         "d" => num * 86400,
         "w" => num * 86400 * 7,
-        _ => anyhow::bail!("invalid --older-than unit '{unit}' in '{s}' — use h (hours), d (days), or w (weeks)"),
+        _ => anyhow::bail!(
+            "invalid --older-than unit '{unit}' in '{s}' — use h (hours), d (days), or w (weeks)"
+        ),
     };
     Ok(std::time::Duration::from_secs(secs))
 }
@@ -1184,8 +1368,12 @@ fn cmd_build(
         return Ok(());
     }
 
-    let mut plan = project::detect(&source_dir)
-        .with_context(|| format!("Failed to detect a build system in {}", source_dir.display()))?;
+    let mut plan = project::detect(&source_dir).with_context(|| {
+        format!(
+            "Failed to detect a build system in {}",
+            source_dir.display()
+        )
+    })?;
     plan.is_temp = is_temp;
 
     eprintln!(
@@ -1194,23 +1382,40 @@ fn cmd_build(
         plan.toolchain_specs.join(", ")
     );
 
-    let resolved = resolve::resolve_multi(&plan.toolchain_specs, config, index)
-        .with_context(|| format!("Failed to resolve toolchain: {}", plan.toolchain_specs.join(", ")))?;
+    let resolved =
+        resolve::resolve_multi(&plan.toolchain_specs, config, index).with_context(|| {
+            format!(
+                "Failed to resolve toolchain: {}",
+                plan.toolchain_specs.join(", ")
+            )
+        })?;
 
     let outcome = (|| -> Result<()> {
-        run_project_step("build", &plan.build_cmd, &plan.source_dir, no_sandbox, &resolved)?;
+        run_project_step(
+            "build",
+            &plan.build_cmd,
+            &plan.source_dir,
+            no_sandbox,
+            &resolved,
+        )?;
 
         if test {
             match &plan.test_cmd {
-                Some(cmd) => run_project_step("test", cmd, &plan.source_dir, no_sandbox, &resolved)?,
-                None => eprintln!("⚠ --test requested but no test command was detected for this project"),
+                Some(cmd) => {
+                    run_project_step("test", cmd, &plan.source_dir, no_sandbox, &resolved)?
+                }
+                None => eprintln!(
+                    "⚠ --test requested but no test command was detected for this project"
+                ),
             }
         }
 
         if run {
             match &plan.run_cmd {
                 Some(cmd) => run_project_step("run", cmd, &plan.source_dir, no_sandbox, &resolved)?,
-                None => eprintln!("⚠ --run requested but no run command was detected for this project"),
+                None => {
+                    eprintln!("⚠ --run requested but no run command was detected for this project")
+                }
             }
         }
 
@@ -1223,7 +1428,10 @@ fn cmd_build(
                 let _ = std::fs::remove_dir_all(&plan.source_dir);
             }
             Err(_) => {
-                eprintln!("⚠ build failed — leaving the clone at {} for inspection", plan.source_dir.display());
+                eprintln!(
+                    "⚠ build failed — leaving the clone at {} for inspection",
+                    plan.source_dir.display()
+                );
             }
         }
     }
@@ -1253,7 +1461,11 @@ fn run_project_step(
     } else {
         let profile = sandbox::SandboxProfile {
             project_dir: Some(project_dir.to_path_buf()),
-            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+            extra_ro_binds: resolved
+                .installations
+                .iter()
+                .map(|i| i.path.clone())
+                .collect(),
             extra_rw_binds: Vec::new(),
             binds_at_path: Vec::new(),
             allow_network: true,
@@ -1267,7 +1479,9 @@ fn run_project_step(
     cmd.stderr(std::process::Stdio::inherit());
 
     eprintln!("▶ {label}: {}", command.join(" "));
-    let status = cmd.status().with_context(|| format!("Failed to execute {program}"))?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("Failed to execute {program}"))?;
     if !status.success() {
         anyhow::bail!("{label} failed (exit {})", status.code().unwrap_or(1));
     }
@@ -1317,10 +1531,15 @@ fn cmd_gui(
         let cwd = std::env::current_dir()?;
         let mut env = resolved_env.clone();
         env.insert("DISPLAY".to_string(), session.display.clone());
-        env.insert("XAUTHORITY".to_string(), session.xauthority.display().to_string());
+        env.insert(
+            "XAUTHORITY".to_string(),
+            session.xauthority.display().to_string(),
+        );
 
-        let mut extra_ro_binds: Vec<std::path::PathBuf> =
-            resolved_installations.iter().map(|i| i.path.clone()).collect();
+        let mut extra_ro_binds: Vec<std::path::PathBuf> = resolved_installations
+            .iter()
+            .map(|i| i.path.clone())
+            .collect();
         extra_ro_binds.push(session.socket_path());
         extra_ro_binds.push(session.xauthority.clone());
 
@@ -1340,7 +1559,9 @@ fn cmd_gui(
     cmd.stderr(std::process::Stdio::inherit());
 
     eprintln!("▶ running: {}", command.join(" "));
-    let mut child = cmd.spawn().with_context(|| format!("Failed to execute {program}"))?;
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("Failed to execute {program}"))?;
 
     // Start VNC server if requested
     if let Some(port) = vnc_port {
@@ -1416,9 +1637,16 @@ fn cmd_site(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let session = if gui { Some(gui::XvfbSession::start(width, height, 24)?) } else { None };
+    let session = if gui {
+        Some(gui::XvfbSession::start(width, height, 24)?)
+    } else {
+        None
+    };
     if let Some(s) = &session {
-        eprintln!("▶ site bucket for {} on {} ({width}x{height})", target.host, s.display);
+        eprintln!(
+            "▶ site bucket for {} on {} ({width}x{height})",
+            target.host, s.display
+        );
     } else {
         eprintln!("▶ site bucket for {}", target.host);
     }
@@ -1452,7 +1680,13 @@ fn cmd_site(
             net_ns: None,
         };
         let args_rest = &args[..];
-        sandbox::sandboxed_command(browser_path.to_string_lossy().as_ref(), args_rest, &target.storage_dir, &env, &profile)
+        sandbox::sandboxed_command(
+            browser_path.to_string_lossy().as_ref(),
+            args_rest,
+            &target.storage_dir,
+            &env,
+            &profile,
+        )
     };
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -1460,7 +1694,9 @@ fn cmd_site(
     cmd.stderr(std::process::Stdio::inherit());
 
     eprintln!("▶ running: {} {}", browser_path.display(), args.join(" "));
-    let mut child = cmd.spawn().with_context(|| format!("Failed to execute {}", browser_path.display()))?;
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("Failed to execute {}", browser_path.display()))?;
 
     let status = match timeout {
         None => child.wait()?,
@@ -1499,7 +1735,9 @@ fn cmd_site(
 
 fn which(bin: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|dir| dir.join(bin)).find(|p| p.is_file())
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(bin))
+            .find(|p| p.is_file())
     })
 }
 
@@ -1512,7 +1750,11 @@ fn is_herd_deploy_pid(pid: i32) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
         Ok(cmdline) => {
             // argv is NUL-separated; join to a single string for substring checks.
-            let joined: String = cmdline.split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
+            let joined: String = cmdline
+                .split('\0')
+                .filter(|a| !a.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
             joined.contains("buckets") && joined.contains("herd") && joined.contains("deploy")
         }
         Err(_) => false, // no /proc entry -> the process is gone, pidfile is stale
@@ -1533,7 +1775,9 @@ fn force_remove_herd(herds_dir: &std::path::Path, name: &str, state_path: &std::
         if let Ok(state) = serde_json::from_str::<herd::HerdState>(&content) {
             for inst in &state.instances {
                 if let Some(inst_pid) = inst.pid {
-                    unsafe { libc::kill(inst_pid as libc::pid_t, libc::SIGKILL); }
+                    unsafe {
+                        libc::kill(inst_pid as libc::pid_t, libc::SIGKILL);
+                    }
                 }
             }
         }
@@ -1544,17 +1788,24 @@ fn force_remove_herd(herds_dir: &std::path::Path, name: &str, state_path: &std::
 /// Manage persistent sessions: start, exec, stop, list.
 fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()> {
     match cmd {
-        SessionCommand::Start { specs, command, tmpfs, size } => {
+        SessionCommand::Start {
+            specs,
+            command,
+            tmpfs,
+            size,
+        } => {
             if specs.is_empty() {
                 anyhow::bail!("At least one spec is required (e.g. 'node@20')");
             }
-            let session_id = session::session_start(
-                &specs, &command, tmpfs, size.as_deref(), config, index
-            )?;
+            let session_id =
+                session::session_start(&specs, &command, tmpfs, size.as_deref(), config, index)?;
             println!("{session_id}");
             Ok(())
         }
-        SessionCommand::Exec { session_id, command } => {
+        SessionCommand::Exec {
+            session_id,
+            command,
+        } => {
             let output = session::session_exec(&session_id, &command, config)?;
             print!("{output}");
             Ok(())
@@ -1582,9 +1833,15 @@ fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()
                         "disk"
                     };
                     let mounted = std::path::Path::new(&s.mount_point).exists();
-                    let pid_str = s.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_string());
-                    println!("  {}  specs={}  backing={backing}  mounted={mounted}  pid={pid_str}",
-                        s.session_id, s.specs.join("+"));
+                    let pid_str = s
+                        .pid
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    println!(
+                        "  {}  specs={}  backing={backing}  mounted={mounted}  pid={pid_str}",
+                        s.session_id,
+                        s.specs.join("+")
+                    );
                 }
             }
             Ok(())
@@ -1595,13 +1852,21 @@ fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()
 fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {
     match cmd {
         WorktreeCommand::Create { repo, branch, from } => {
-            let path = worktree::create(Path::new(&repo), &branch, from.as_deref(), config.worktree_dir.as_deref())?;
+            let path = worktree::create(
+                Path::new(&repo),
+                &branch,
+                from.as_deref(),
+                config.worktree_dir.as_deref(),
+            )?;
             println!("{}", path.display());
             Ok(())
         }
-        WorktreeCommand::Remove { repo, worktree_path, branch, force } => {
-            worktree::remove(Path::new(&repo), Path::new(&worktree_path), &branch, force)
-        }
+        WorktreeCommand::Remove {
+            repo,
+            worktree_path,
+            branch,
+            force,
+        } => worktree::remove(Path::new(&repo), Path::new(&worktree_path), &branch, force),
         WorktreeCommand::List { repo } => {
             print!("{}", worktree::list(Path::new(&repo))?);
             Ok(())
@@ -1626,8 +1891,8 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
         } => {
             let restart_policy = match restart.as_str() {
                 "always" => herd::RestartPolicy::Always,
-                "never"  => herd::RestartPolicy::Never,
-                _        => herd::RestartPolicy::OnFailure,
+                "never" => herd::RestartPolicy::Never,
+                _ => herd::RestartPolicy::OnFailure,
             };
 
             let herd_spec = herd::HerdSpec {
@@ -1665,10 +1930,14 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
 
             // Wait for a real SIGINT/SIGTERM (not stdin EOF — see HERD_STOP_SIGNAL's doc).
             unsafe {
-                if libc::signal(libc::SIGINT, herd_signal_handler as *const () as usize) == libc::SIG_ERR {
+                if libc::signal(libc::SIGINT, herd_signal_handler as *const () as usize)
+                    == libc::SIG_ERR
+                {
                     eprintln!("  warning: could not install SIGINT handler for herd deploy");
                 }
-                if libc::signal(libc::SIGTERM, herd_signal_handler as *const () as usize) == libc::SIG_ERR {
+                if libc::signal(libc::SIGTERM, herd_signal_handler as *const () as usize)
+                    == libc::SIG_ERR
+                {
                     eprintln!("  warning: could not install SIGTERM handler for herd deploy");
                 }
             }
@@ -1722,7 +1991,10 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                     let health = format!("{}/{}", running, failed);
                     println!(
                         "{:<20} {:<20} {:<8} {:<14} {}",
-                        s.name, s.bucket, s.replicas, health,
+                        s.name,
+                        s.bucket,
+                        s.replicas,
+                        health,
                         s.net.as_deref().unwrap_or("—")
                     );
                 }
@@ -1737,7 +2009,9 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             }
             let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
-            let running = state.instances.iter()
+            let running = state
+                .instances
+                .iter()
                 .filter(|i| i.status == herd::InstanceStatus::Running)
                 .count();
             println!("Herd:    {}", state.spec.name);
@@ -1753,7 +2027,9 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                 println!(
                     "{:<6} {:<10} {:<12} {}",
                     inst.index,
-                    inst.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
+                    inst.pid
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "—".into()),
                     format!("{:?}", inst.status).to_lowercase(),
                     inst.restart_count,
                 );
@@ -1791,7 +2067,9 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                 // process. Only signal when /proc confirms it's still a
                 // `buckets herd deploy`.
                 if is_herd_deploy_pid(pid) {
-                    unsafe { libc::kill(pid, libc::SIGTERM); }
+                    unsafe {
+                        libc::kill(pid, libc::SIGTERM);
+                    }
                     eprintln!("▶ stopping herd '{name}' (signaling deploy PID {pid})");
                     // Wait for the deploy process to clean up replicas + state dir.
                     for _ in 0..50 {
@@ -1801,7 +2079,9 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     if herds_dir.join(&name).exists() {
-                        eprintln!("⚠ herd '{name}' state dir still exists after 5s — force-removing");
+                        eprintln!(
+                            "⚠ herd '{name}' state dir still exists after 5s — force-removing"
+                        );
                         force_remove_herd(&herds_dir, &name, &state_path);
                     }
                     eprintln!("✓ herd '{name}' stopped");
@@ -1812,10 +2092,14 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             // Fallback: no live deploy process — kill replicas directly.
             let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
-            eprintln!("▶ stopping herd '{name}' (no live deploy process — killing replicas directly)");
+            eprintln!(
+                "▶ stopping herd '{name}' (no live deploy process — killing replicas directly)"
+            );
             for inst in &state.instances {
                 if let Some(pid) = inst.pid {
-                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                    }
                     eprintln!("  ✓ replica {} (PID {pid}) terminated", inst.index);
                 }
             }
