@@ -1,7 +1,7 @@
-use std::path::Path;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use anyhow::{Result, Context};
-use serde::{Serialize, Deserialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketMetadata {
@@ -29,14 +29,16 @@ pub fn parse_bucketfile(content: &str) -> Result<Vec<BucketfileDirective>> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        
-        let (cmd, args) = trimmed.split_once(char::is_whitespace)
+
+        let (cmd, args) = trimmed
+            .split_once(char::is_whitespace)
             .unwrap_or((trimmed, ""));
         let args = args.trim();
-        
+
         match cmd.to_uppercase().as_str() {
             "FROM" => {
-                let specs = args.split_whitespace()
+                let specs = args
+                    .split_whitespace()
                     .map(|s| s.trim_matches(',').to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
@@ -55,9 +57,16 @@ pub fn parse_bucketfile(content: &str) -> Result<Vec<BucketfileDirective>> {
             "COPY" => {
                 let parts: Vec<&str> = args.split_whitespace().collect();
                 if parts.len() != 2 {
-                    anyhow::bail!("Invalid COPY directive on line {}: {}. Expected: COPY <src> <dest>", line_num, line);
+                    anyhow::bail!(
+                        "Invalid COPY directive on line {}: {}. Expected: COPY <src> <dest>",
+                        line_num,
+                        line
+                    );
                 }
-                directives.push(BucketfileDirective::Copy(parts[0].to_string(), parts[1].to_string()));
+                directives.push(BucketfileDirective::Copy(
+                    parts[0].to_string(),
+                    parts[1].to_string(),
+                ));
             }
             "RUN" => {
                 if args.is_empty() {
@@ -116,10 +125,11 @@ pub fn build_bucketfile(
     // resolve against the Bucketfile's own directory — not the cwd of the
     // `buckets` process, which may be anywhere when `-f <path>` or a
     // non-cwd source directory is used.
-    let bucketfile_dir = bucketfile_path.parent()
+    let bucketfile_dir = bucketfile_path
+        .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    
+
     // Extract base dependencies from FROM
     let mut from_specs = Vec::new();
     for dir in &directives {
@@ -127,21 +137,21 @@ pub fn build_bucketfile(
             from_specs.extend(specs.clone());
         }
     }
-    
+
     // Target directory under local cellar
     let project_name = format!("local/{}", name);
     let target_dir = config.version_dir(&project_name, "0.0.0");
     let bin_dir = target_dir.join("bin");
-    
+
     if target_dir.exists() {
         std::fs::remove_dir_all(&target_dir)?;
     }
     std::fs::create_dir_all(&bin_dir)?;
-    
+
     // We will build inside a temporary workspace directory on the host
     let temp_workspace = tempfile::tempdir()?;
     let workspace_path = temp_workspace.path();
-    
+
     // Resolve all FROM specs
     let index = crate::index::Index::builtin();
     let resolved = if !from_specs.is_empty() {
@@ -157,19 +167,19 @@ pub fn build_bucketfile(
             all_packages: Vec::new(),
         }
     };
-    
+
     let mut current_workdir = workspace_path.to_path_buf();
     let mut runtime_env = HashMap::new();
     let mut build_env = resolved.env.clone();
-    
+
     // Copy env vars from resolved environment
     for (k, v) in &resolved.env {
         runtime_env.insert(k.clone(), v.clone());
     }
-    
+
     // Run-time entrypoint cmd
     let mut entrypoint_cmd = String::new();
-    
+
     // Process directives
     for dir in &directives {
         match dir {
@@ -186,7 +196,7 @@ pub fn build_bucketfile(
                     let cleaned_dest = dest.trim_start_matches('/');
                     workspace_path.join(cleaned_dest)
                 };
-                
+
                 let src_path = Path::new(src);
                 let host_src = if src_path.is_absolute() {
                     src_path.to_path_buf()
@@ -209,21 +219,32 @@ pub fn build_bucketfile(
             }
             BucketfileDirective::Run(cmd_str) => {
                 eprintln!("▶ [RUN] {}", cmd_str);
-                
+
                 // Set up sandbox profile for building
                 let profile = crate::sandbox::SandboxProfile {
                     project_dir: Some(workspace_path.to_path_buf()),
-                    extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+                    extra_ro_binds: resolved
+                        .installations
+                        .iter()
+                        .map(|i| i.path.clone())
+                        .collect(),
                     extra_rw_binds: vec![target_dir.clone()],
                     allow_network: true,
                     net_ns: None,
                 };
-                
+
                 // Execute command inside sandbox
                 let args = vec!["-c".to_string(), cmd_str.clone()];
-                let mut cmd = crate::sandbox::sandboxed_command("/bin/sh", &args, &current_workdir, &build_env, &profile);
-                
-                let status = cmd.status()
+                let mut cmd = crate::sandbox::sandboxed_command(
+                    "/bin/sh",
+                    &args,
+                    &current_workdir,
+                    &build_env,
+                    &profile,
+                );
+
+                let status = cmd
+                    .status()
                     .with_context(|| format!("Failed to run build command: {}", cmd_str))?;
                 if !status.success() {
                     anyhow::bail!("Build command failed with exit code: {:?}", status.code());
@@ -234,51 +255,50 @@ pub fn build_bucketfile(
             }
         }
     }
-    
+
     // Validate entrypoint
     if entrypoint_cmd.is_empty() {
         anyhow::bail!("Bucketfile has no ENTRYPOINT or CMD defined");
     }
-    
+
     // 5. Create launcher script
     let launcher_path = bin_dir.join(name);
-    let launcher_content = format!(
-        "#!/bin/sh\nexec buckets run {} -- \"$@\"\n",
-        project_name
-    );
+    let launcher_content = format!("#!/bin/sh\nexec buckets run {} -- \"$@\"\n", project_name);
     std::fs::write(&launcher_path, launcher_content)?;
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&launcher_path, std::fs::Permissions::from_mode(0o755))?;
     }
-    
+
     // Save metadata.json
     let metadata_path = target_dir.join("metadata.json");
     let relative_workdir = if current_workdir == workspace_path {
         None
     } else {
-        current_workdir.strip_prefix(workspace_path).ok()
+        current_workdir
+            .strip_prefix(workspace_path)
+            .ok()
             .map(|p| p.to_string_lossy().to_string())
     };
-    
+
     let meta = BucketMetadata {
         entrypoint: entrypoint_cmd,
         dependencies: from_specs,
         env: runtime_env,
         workdir: relative_workdir,
     };
-    
+
     let meta_json = serde_json::to_string_pretty(&meta)?;
     std::fs::write(&metadata_path, meta_json)?;
-    
+
     // Copy the contents of the temp workspace into target_dir/workspace/
     let target_workspace = target_dir.join("workspace");
     copy_dir_all(workspace_path, &target_workspace)?;
-    
+
     crate::cellar::update_version_symlinks(config, &project_name, &semver::Version::new(0, 0, 0))?;
-    
+
     eprintln!("✓ successfully built local bucket: {} v0.0.0", name);
     Ok(())
 }

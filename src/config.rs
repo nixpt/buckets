@@ -4,8 +4,8 @@
 //! ([`crate::inventory`], [`crate::install`], [`crate::cellar`]) so none of
 //! them hardcode paths or URLs directly.
 
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Configuration for buckets.
 #[derive(Debug, Clone)]
@@ -64,7 +64,9 @@ impl Config {
             }
         };
 
-        let worktree_dir = std::env::var("BUCKETS_WORKTREE_DIR").ok().map(PathBuf::from);
+        let worktree_dir = std::env::var("BUCKETS_WORKTREE_DIR")
+            .ok()
+            .map(PathBuf::from);
 
         let platform = crate::types::platform_prefix();
 
@@ -81,7 +83,9 @@ impl Config {
 
     /// Path to the cached installation directory for a specific project+version.
     pub fn version_dir(&self, project: &str, version: &str) -> PathBuf {
-        self.cache_dir.join(sanitize_project_name(project)).join(format!("v{version}"))
+        self.cache_dir
+            .join(sanitize_project_name(project))
+            .join(format!("v{version}"))
     }
 
     /// Path to the project's cache directory (contains v* subdirs).
@@ -217,11 +221,14 @@ path = "/workspace/projects/crush"
         let data: PantryToml = toml::from_str(toml_content).unwrap();
         let ovr = data.overrides.unwrap();
         assert_eq!(ovr.len(), 2);
-        
+
         let node = ovr.get("nodejs.org").unwrap();
         assert_eq!(node.path, "/workspace/projects/custom-node");
         assert_eq!(node.version.as_deref(), Some("20.99.0"));
-        assert_eq!(node.provides.as_ref().unwrap(), &vec!["node".to_string(), "npm".to_string()]);
+        assert_eq!(
+            node.provides.as_ref().unwrap(),
+            &vec!["node".to_string(), "npm".to_string()]
+        );
 
         let crush = ovr.get("crush").unwrap();
         assert_eq!(crush.path, "/workspace/projects/crush");
@@ -229,5 +236,3 @@ path = "/workspace/projects/crush"
         assert!(crush.provides.is_none());
     }
 }
-
-

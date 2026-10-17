@@ -4,8 +4,8 @@
 //! half-extracted directory `is_installed` would mistake for complete).
 
 use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::cellar;
 use crate::config::Config;
@@ -79,7 +79,11 @@ fn install_local_dir(
             }
         } else if source_dir.join("go.mod").exists() {
             eprintln!("↓ compiling go project via path...");
-            let bin_name = source_dir.file_name().unwrap().to_string_lossy().to_string();
+            let bin_name = source_dir
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
             let mut cmd = std::process::Command::new("go");
             cmd.arg("build")
                 .arg("-o")
@@ -163,7 +167,10 @@ fn install_local_dir(
     }
 
     cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
-    eprintln!("✓ successfully built local path {} → v{}", pkg.project, version_str);
+    eprintln!(
+        "✓ successfully built local path {} → v{}",
+        pkg.project, version_str
+    );
 
     Ok(Installation {
         pkg: pkg.clone(),
@@ -172,9 +179,12 @@ fn install_local_dir(
 }
 
 fn install_path(config: &Config, pkg: &Package) -> Result<Installation> {
-    let source_path_str = pkg.project.strip_prefix("path:")
+    let source_path_str = pkg
+        .project
+        .strip_prefix("path:")
         .context("Missing path: prefix")?;
-    let source_dir = PathBuf::from(source_path_str).canonicalize()
+    let source_dir = PathBuf::from(source_path_str)
+        .canonicalize()
         .with_context(|| format!("Local path does not exist: {source_path_str}"))?;
     install_local_dir(config, pkg, &source_dir, None)
 }
@@ -184,7 +194,8 @@ fn install_pantry_override(
     pkg: &Package,
     ovr: &crate::config::PantryOverride,
 ) -> Result<Installation> {
-    let source_dir = PathBuf::from(&ovr.path).canonicalize()
+    let source_dir = PathBuf::from(&ovr.path)
+        .canonicalize()
         .with_context(|| format!("Pantry override path does not exist: {}", ovr.path))?;
     install_local_dir(config, pkg, &source_dir, ovr.provides.as_deref())
 }
@@ -192,7 +203,9 @@ fn install_pantry_override(
 fn install_cargo(config: &Config, pkg: &Package) -> Result<Installation> {
     let version_str = dist_version_string(&pkg.version);
     let target_dir = config.version_dir(&pkg.project, &version_str);
-    let crate_name = pkg.project.strip_prefix("cargo:")
+    let crate_name = pkg
+        .project
+        .strip_prefix("cargo:")
         .context("Missing cargo: prefix")?;
 
     eprintln!("↓ compiling cargo package {crate_name} v{version_str}...");
@@ -234,7 +247,12 @@ fn which_bin(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn write_installed_marker(target_dir: &Path, source: &str, name: &str, version: &str) -> Result<()> {
+fn write_installed_marker(
+    target_dir: &Path,
+    source: &str,
+    name: &str,
+    version: &str,
+) -> Result<()> {
     fs::write(
         target_dir.join(cellar::INSTALLED_MARKER),
         format!("source={source}\npkg={name}\nver={version}\n"),
@@ -358,13 +376,16 @@ fn map_download_ureq_error(err: ureq::Error, url: &str, project: &str) -> anyhow
         ureq::Error::Status(404, _) => {
             anyhow::anyhow!(
                 "Bottle for package '{}' not found (HTTP 404 at {})",
-                project, url
+                project,
+                url
             )
         }
         ureq::Error::Status(code, _) => {
             anyhow::anyhow!(
                 "Failed to download bottle for package '{}' (HTTP {} at {})",
-                project, code, url
+                project,
+                code,
+                url
             )
         }
         ureq::Error::Transport(transport) => {
@@ -425,7 +446,9 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
         .with_context(|| format!("Failed to open lock file: {}", lock_path.display()))?;
 
     let mut lock = fd_lock::RwLock::new(lock_file);
-    let _guard = lock.write().with_context(|| format!("Failed to acquire write lock on: {}", lock_path.display()))?;
+    let _guard = lock
+        .write()
+        .with_context(|| format!("Failed to acquire write lock on: {}", lock_path.display()))?;
 
     // Double-check under lock
     if target_dir.join("bin").exists() {
@@ -453,7 +476,8 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     let xz_decoder = xz2::read::XzDecoder::new(reader);
     let mut archive = tar::Archive::new(xz_decoder);
 
-    archive.unpack(tempdir.path())
+    archive
+        .unpack(tempdir.path())
         .with_context(|| format!("Failed to extract bottle for {url}"))?;
 
     // Discover the actual extraction root (pkgx bottles are nested)
@@ -494,11 +518,12 @@ pub fn install_multi(config: &Config, packages: &[Package]) -> Result<Vec<Instal
         let mut handles = Vec::with_capacity(packages.len());
         for pkg in packages {
             let config_ref = &*config;
-            handles.push(s.spawn(move || {
-                install(config_ref, pkg)
-            }));
+            handles.push(s.spawn(move || install(config_ref, pkg)));
         }
-        handles.into_iter().map(|h| h.join().expect("thread panicked")).collect::<Vec<_>>()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("thread panicked"))
+            .collect::<Vec<_>>()
     });
 
     // Collect results, returning first error if any
@@ -549,7 +574,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let src_dir = tempdir.path().join("my-test-bin");
         fs::create_dir_all(src_dir.join("src")).unwrap();
-        
+
         // Write Cargo.toml
         fs::write(
             src_dir.join("Cargo.toml"),
@@ -557,31 +582,31 @@ mod tests {
 name = "my-test-bin"
 version = "0.1.0"
 edition = "2021"
-"#
-        ).unwrap();
-        
+"#,
+        )
+        .unwrap();
+
         // Write main.rs
         fs::write(
             src_dir.join("src").join("main.rs"),
             r#"fn main() {
     println!("hello from local path!");
 }
-"#
-        ).unwrap();
-        
+"#,
+        )
+        .unwrap();
+
         let config = Config::default();
         let pkg = Package {
             project: format!("path:{}", src_dir.to_string_lossy()),
             version: semver::Version::new(0, 0, 0),
         };
-        
+
         let inst = install(&config, &pkg).unwrap();
         let bin_path = inst.path.join("bin").join("my-test-bin");
         assert!(bin_path.exists());
-        
-        let output = std::process::Command::new(bin_path)
-            .output()
-            .unwrap();
+
+        let output = std::process::Command::new(bin_path).output().unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert_eq!(stdout.trim(), "hello from local path!");
     }
@@ -629,7 +654,11 @@ edition = "2021"
         let _guard = lock.write().unwrap();
         let elapsed = start.elapsed();
 
-        assert!(elapsed >= std::time::Duration::from_millis(80), "elapsed was {:?}", elapsed);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(80),
+            "elapsed was {:?}",
+            elapsed
+        );
         child.wait().unwrap();
     }
 
@@ -638,13 +667,14 @@ edition = "2021"
         let tempdir = tempfile::tempdir().unwrap();
         let src_dir = tempdir.path().join("my-custom-src");
         fs::create_dir_all(src_dir.join("bin")).unwrap();
-        
+
         // Write a mock script inside bin/
         let script_path = src_dir.join("bin").join("my-test-tool");
         fs::write(
             &script_path,
-            "#!/bin/sh\necho 'hello from pantry override!'\n"
-        ).unwrap();
+            "#!/bin/sh\necho 'hello from pantry override!'\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -660,12 +690,13 @@ edition = "2021"
                 path: src_dir.to_string_lossy().to_string(),
                 version: Some("2.3.4".to_string()),
                 provides: Some(vec!["my-test-tool".to_string()]),
-            }
+            },
         );
         config.pantry_overrides = overrides;
 
         // Resolve version
-        let resolved_versions = crate::inventory::list_remote_versions(&config, "my-custom-override").unwrap();
+        let resolved_versions =
+            crate::inventory::list_remote_versions(&config, "my-custom-override").unwrap();
         assert_eq!(resolved_versions, vec![semver::Version::new(2, 3, 4)]);
 
         // Install
@@ -674,15 +705,13 @@ edition = "2021"
             version: semver::Version::new(2, 3, 4),
         };
         let inst = install(&config, &pkg).unwrap();
-        
+
         // Assert symlink created
         let bin_path = inst.path.join("bin").join("my-test-tool");
         assert!(bin_path.exists());
 
         // Execute and verify
-        let output = std::process::Command::new(bin_path)
-            .output()
-            .unwrap();
+        let output = std::process::Command::new(bin_path).output().unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert_eq!(stdout.trim(), "hello from pantry override!");
     }
@@ -716,7 +745,8 @@ edition = "2021"
 
         let env = crate::env::compose_env(&[inst]);
         assert!(
-            env.get("PYTHONPATH").is_some_and(|p| p.contains(tempdir.path().to_str().unwrap())),
+            env.get("PYTHONPATH")
+                .is_some_and(|p| p.contains(tempdir.path().to_str().unwrap())),
             "PYTHONPATH should include cellar, got {:?}",
             env.get("PYTHONPATH")
         );
@@ -742,7 +772,8 @@ edition = "2021"
 
         let env = crate::env::compose_env(&[inst]);
         assert!(
-            env.get("NODE_PATH").is_some_and(|p| p.contains("node_modules")),
+            env.get("NODE_PATH")
+                .is_some_and(|p| p.contains("node_modules")),
             "NODE_PATH should include node_modules, got {:?}",
             env.get("NODE_PATH")
         );

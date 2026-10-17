@@ -43,10 +43,11 @@ struct CargoCrateResponse {
 }
 
 fn list_cargo_versions(project: &str) -> Result<Vec<Version>> {
-    let crate_name = project.strip_prefix("cargo:")
+    let crate_name = project
+        .strip_prefix("cargo:")
         .context("Missing cargo: prefix")?;
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
-    
+
     let response = match ureq::get(&url)
         .set("User-Agent", "crush-buckets/0.1.0 (contact@nixpt.dev)")
         .call()
@@ -54,10 +55,10 @@ fn list_cargo_versions(project: &str) -> Result<Vec<Version>> {
         Ok(res) => res,
         Err(e) => return Err(map_cargo_ureq_error(e, &url, crate_name)),
     };
-        
+
     let data: CargoCrateResponse = serde_json::from_reader(response.into_reader())
         .with_context(|| format!("Failed to parse crates.io response for {crate_name}"))?;
-        
+
     let mut versions = Vec::new();
     for cv in data.versions {
         if !cv.yanked {
@@ -66,11 +67,11 @@ fn list_cargo_versions(project: &str) -> Result<Vec<Version>> {
             }
         }
     }
-    
+
     // Sort newest first
     versions.sort_by(|a, b| b.cmp(a));
     versions.dedup();
-    
+
     Ok(versions)
 }
 
@@ -126,7 +127,11 @@ pub fn list_remote_versions(config: &Config, project: &str) -> Result<Vec<Versio
 
 /// Find the best matching remote version for a constraint.
 /// Returns `None` if no version matches.
-pub fn best_match(config: &Config, project: &str, constraint: &VersionReq) -> Result<Option<Version>> {
+pub fn best_match(
+    config: &Config,
+    project: &str,
+    constraint: &VersionReq,
+) -> Result<Option<Version>> {
     let versions = list_remote_versions(config, project)?;
     // versions are sorted newest-first, so find() returns the newest match
     // (semver pre-release versions are excluded unless explicitly requested)
@@ -150,20 +155,24 @@ fn map_ureq_error(err: ureq::Error, url: &str, project: &str) -> anyhow::Error {
         ureq::Error::Status(404, _) => {
             anyhow::anyhow!(
                 "Package '{}' not found in the index (HTTP 404 at {})",
-                project, url
+                project,
+                url
             )
         }
         ureq::Error::Status(code, _) => {
             anyhow::anyhow!(
                 "Failed to fetch versions for package '{}' (HTTP {} at {})",
-                project, code, url
+                project,
+                code,
+                url
             )
         }
         ureq::Error::Transport(transport) => {
             anyhow::anyhow!(
                 "Network connection failed while fetching package '{}' (Error: {:?})\n\
                  Please check your internet connection or BUCKETS_DIST_URL.",
-                project, transport.kind()
+                project,
+                transport.kind()
             )
         }
     }
@@ -174,20 +183,24 @@ fn map_cargo_ureq_error(err: ureq::Error, url: &str, crate_name: &str) -> anyhow
         ureq::Error::Status(404, _) => {
             anyhow::anyhow!(
                 "Cargo crate '{}' not found on crates.io (HTTP 404 at {})",
-                crate_name, url
+                crate_name,
+                url
             )
         }
         ureq::Error::Status(code, _) => {
             anyhow::anyhow!(
                 "Failed to fetch crate '{}' from crates.io (HTTP {} at {})",
-                crate_name, code, url
+                crate_name,
+                code,
+                url
             )
         }
         ureq::Error::Transport(transport) => {
             anyhow::anyhow!(
                 "Network connection failed while fetching cargo crate '{}' (Error: {:?})\n\
                  Please check your internet connection.",
-                crate_name, transport.kind()
+                crate_name,
+                transport.kind()
             )
         }
     }
@@ -290,9 +303,7 @@ fn map_lang_ureq_error(
 ) -> anyhow::Error {
     match err {
         ureq::Error::Status(404, _) => {
-            anyhow::anyhow!(
-                "{registry} package '{pkg_name}' not found (HTTP 404 at {url})"
-            )
+            anyhow::anyhow!("{registry} package '{pkg_name}' not found (HTTP 404 at {url})")
         }
         ureq::Error::Status(code, _) => {
             anyhow::anyhow!(
@@ -315,7 +326,10 @@ mod tests {
 
     #[test]
     fn test_parse_dist_version_plain_semver() {
-        assert_eq!(parse_dist_version("20.11.0"), Version::parse("20.11.0").ok());
+        assert_eq!(
+            parse_dist_version("20.11.0"),
+            Version::parse("20.11.0").ok()
+        );
     }
 
     #[test]
@@ -385,34 +399,41 @@ mod tests {
 
     #[test]
     fn test_pypi_missing_package_404() {
-        let err = list_remote_versions(&Config::default(), "pypi:this-package-does-not-exist-xyz123zzz")
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("not found"),
-            "got: {err}"
-        );
+        let err = list_remote_versions(
+            &Config::default(),
+            "pypi:this-package-does-not-exist-xyz123zzz",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {err}");
     }
 
     #[test]
     fn test_npm_rejects_scoped() {
         let err = list_remote_versions(&Config::default(), "npm:@types/node").unwrap_err();
-        assert!(
-            err.to_string().contains("scoped"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("scoped"), "got: {err}");
     }
 
     #[test]
     fn test_map_ureq_error_dns() {
-        let err = ureq::get("http://this-does-not-exist.invalid/").call().unwrap_err();
+        let err = ureq::get("http://this-does-not-exist.invalid/")
+            .call()
+            .unwrap_err();
         let mapped = map_ureq_error(err, "http://this-does-not-exist.invalid/", "test-pkg");
         assert!(mapped.to_string().contains("Network connection failed"));
     }
 
     #[test]
     fn test_map_ureq_error_404() {
-        let err = ureq::get("https://dist.pkgx.dev/nonexistent-package/versions.txt").call().unwrap_err();
-        let mapped = map_ureq_error(err, "https://dist.pkgx.dev/nonexistent-package/versions.txt", "nonexistent-package");
-        assert!(mapped.to_string().contains("Package 'nonexistent-package' not found"));
+        let err = ureq::get("https://dist.pkgx.dev/nonexistent-package/versions.txt")
+            .call()
+            .unwrap_err();
+        let mapped = map_ureq_error(
+            err,
+            "https://dist.pkgx.dev/nonexistent-package/versions.txt",
+            "nonexistent-package",
+        );
+        assert!(mapped
+            .to_string()
+            .contains("Package 'nonexistent-package' not found"));
     }
 }

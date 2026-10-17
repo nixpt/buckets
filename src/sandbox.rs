@@ -136,7 +136,12 @@ fn which_proot() -> Option<PathBuf> {
 /// Build the `bwrap` argument list. Split out from [`sandboxed_command`]
 /// so the arg-building logic is unit-testable without actually spawning
 /// `bwrap` (CI/sandboxed test environments may not have it either).
-fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &SandboxProfile) -> Vec<String> {
+fn build_bwrap_args(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    profile: &SandboxProfile,
+) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
 
     for dir in BASE_RO_DIRS {
@@ -204,7 +209,12 @@ fn build_bwrap_args(program: &str, args: &[String], cwd: &Path, profile: &Sandbo
     a
 }
 
-fn build_proot_args(program: &str, args: &[String], cwd: &Path, profile: &SandboxProfile) -> Vec<String> {
+fn build_proot_args(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    profile: &SandboxProfile,
+) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
 
     a.push("-0".into());
@@ -243,7 +253,11 @@ mod tests {
     use super::*;
 
     fn find(args: &[String], flag: &str) -> Vec<usize> {
-        args.iter().enumerate().filter(|(_, a)| *a == flag).map(|(i, _)| i).collect()
+        args.iter()
+            .enumerate()
+            .filter(|(_, a)| *a == flag)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     #[test]
@@ -265,7 +279,10 @@ mod tests {
 
     #[test]
     fn network_allowed_when_requested() {
-        let profile = SandboxProfile { allow_network: true, ..Default::default() };
+        let profile = SandboxProfile {
+            allow_network: true,
+            ..Default::default()
+        };
         let args = build_bwrap_args("echo", &[], Path::new("/tmp"), &profile);
         assert!(!args.iter().any(|a| a == "--unshare-net"));
     }
@@ -276,7 +293,10 @@ mod tests {
     /// resolve host" because /etc/resolv.conf wasn't bound.
     #[test]
     fn network_allowed_binds_resolv_conf() {
-        let profile = SandboxProfile { allow_network: true, ..Default::default() };
+        let profile = SandboxProfile {
+            allow_network: true,
+            ..Default::default()
+        };
         let args = build_bwrap_args("echo", &[], Path::new("/tmp"), &profile);
         assert!(args.iter().any(|a| a == "/etc/resolv.conf"), "{args:?}");
     }
@@ -301,7 +321,12 @@ mod tests {
             project_dir: Some(PathBuf::from("/home/user/proj")),
             ..Default::default()
         };
-        let args = build_bwrap_args("cargo", &["build".to_string()], Path::new("/home/user/proj"), &profile);
+        let args = build_bwrap_args(
+            "cargo",
+            &["build".to_string()],
+            Path::new("/home/user/proj"),
+            &profile,
+        );
         let bind_positions = find(&args, "--bind");
         assert_eq!(bind_positions.len(), 1);
         assert_eq!(args[bind_positions[0] + 1], "/home/user/proj");
@@ -325,15 +350,27 @@ mod tests {
             ..Default::default()
         };
         let args = build_bwrap_args("node", &[], Path::new("/tmp"), &profile);
-        assert!(args.iter().any(|a| a == "/home/user/.buckets/nodejs.org/v20.20.2"));
-        assert!(args.iter().any(|a| a == "/home/user/.buckets/openssl.org/v1.1.1w"));
+        assert!(args
+            .iter()
+            .any(|a| a == "/home/user/.buckets/nodejs.org/v20.20.2"));
+        assert!(args
+            .iter()
+            .any(|a| a == "/home/user/.buckets/openssl.org/v1.1.1w"));
     }
 
     #[test]
     fn program_and_args_come_after_separator() {
         let profile = SandboxProfile::default();
-        let args = build_bwrap_args("node", &["-e".to_string(), "1+1".to_string()], Path::new("/tmp"), &profile);
-        let sep = args.iter().position(|a| a == "--").expect("-- separator present");
+        let args = build_bwrap_args(
+            "node",
+            &["-e".to_string(), "1+1".to_string()],
+            Path::new("/tmp"),
+            &profile,
+        );
+        let sep = args
+            .iter()
+            .position(|a| a == "--")
+            .expect("-- separator present");
         assert_eq!(args[sep + 1], "node");
         assert_eq!(args[sep + 2], "-e");
         assert_eq!(args[sep + 3], "1+1");
@@ -343,7 +380,10 @@ mod tests {
     fn chdir_set_to_cwd() {
         let profile = SandboxProfile::default();
         let args = build_bwrap_args("echo", &[], Path::new("/some/cwd"), &profile);
-        let pos = args.iter().position(|a| a == "--chdir").expect("--chdir present");
+        let pos = args
+            .iter()
+            .position(|a| a == "--chdir")
+            .expect("--chdir present");
         assert_eq!(args[pos + 1], "/some/cwd");
     }
 
@@ -358,14 +398,15 @@ mod tests {
     #[test]
     fn proot_extra_ro_binds_included() {
         let profile = SandboxProfile {
-            extra_ro_binds: vec![
-                PathBuf::from("/home/user/.buckets/nodejs.org/v20.20.2"),
-            ],
+            extra_ro_binds: vec![PathBuf::from("/home/user/.buckets/nodejs.org/v20.20.2")],
             ..Default::default()
         };
         let args = build_proot_args("node", &[], Path::new("/tmp"), &profile);
         let pos = args.iter().position(|a| a == "-b").expect("-b present");
-        assert_eq!(args[pos + 1], "/home/user/.buckets/nodejs.org/v20.20.2:/home/user/.buckets/nodejs.org/v20.20.2");
+        assert_eq!(
+            args[pos + 1],
+            "/home/user/.buckets/nodejs.org/v20.20.2:/home/user/.buckets/nodejs.org/v20.20.2"
+        );
     }
 
     #[test]
@@ -374,7 +415,12 @@ mod tests {
             project_dir: Some(PathBuf::from("/home/user/proj")),
             ..Default::default()
         };
-        let args = build_proot_args("cargo", &["build".to_string()], Path::new("/home/user/proj"), &profile);
+        let args = build_proot_args(
+            "cargo",
+            &["build".to_string()],
+            Path::new("/home/user/proj"),
+            &profile,
+        );
         let pos = args.iter().position(|a| a == "-b").expect("-b present");
         assert_eq!(args[pos + 1], "/home/user/proj:/home/user/proj");
     }
@@ -382,7 +428,12 @@ mod tests {
     #[test]
     fn proot_program_and_args_come_at_the_end() {
         let profile = SandboxProfile::default();
-        let args = build_proot_args("node", &["-e".to_string(), "1+1".to_string()], Path::new("/tmp"), &profile);
+        let args = build_proot_args(
+            "node",
+            &["-e".to_string(), "1+1".to_string()],
+            Path::new("/tmp"),
+            &profile,
+        );
         let len = args.len();
         assert_eq!(args[len - 3], "node");
         assert_eq!(args[len - 2], "-e");

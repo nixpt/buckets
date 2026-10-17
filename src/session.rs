@@ -118,7 +118,12 @@ fn is_mounted(path: &str) -> bool {
 ///
 /// `lower_dirs` is a colon-separated list of read-only directories,
 /// `upper_dir` is the writable layer, `work_dir` is kernel metadata.
-fn overlay_mount(lower_dirs: &[&str], upper_dir: &str, work_dir: &str, mount_point: &str) -> Result<()> {
+fn overlay_mount(
+    lower_dirs: &[&str],
+    upper_dir: &str,
+    work_dir: &str,
+    mount_point: &str,
+) -> Result<()> {
     // Create mount point
     std::fs::create_dir_all(mount_point)
         .with_context(|| format!("Failed to create mount point {mount_point}"))?;
@@ -162,7 +167,10 @@ fn overlay_unmount(mount_point: &str) -> Result<()> {
                 .output()
                 .with_context(|| format!("Failed to lazy-unmount {mount_point}"))?;
             if !lazy.status.success() {
-                bail!("lazy unmount also failed: {}", String::from_utf8_lossy(&lazy.stderr));
+                bail!(
+                    "lazy unmount also failed: {}",
+                    String::from_utf8_lossy(&lazy.stderr)
+                );
             }
         } else {
             bail!("umount failed: {stderr}");
@@ -174,16 +182,25 @@ fn overlay_unmount(mount_point: &str) -> Result<()> {
 
 /// Mount a tmpfs at a path.
 fn tmpfs_mount(path: &str, size: &str) -> Result<()> {
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create {path}"))?;
+    std::fs::create_dir_all(path).with_context(|| format!("Failed to create {path}"))?;
 
     let output = Command::new("mount")
-        .args(["-t", "tmpfs", "tmpfs", "-o", &format!("size={size},mode=0755"), path])
+        .args([
+            "-t",
+            "tmpfs",
+            "tmpfs",
+            "-o",
+            &format!("size={size},mode=0755"),
+            path,
+        ])
         .output()
         .with_context(|| format!("Failed to mount tmpfs at {path}"))?;
 
     if !output.status.success() {
-        bail!("tmpfs mount failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "tmpfs mount failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     Ok(())
 }
@@ -207,8 +224,8 @@ fn save_session(config: &Config, cfg: &SessionConfig) -> Result<()> {
         .with_context(|| format!("Failed to create session dir {}", dir.display()))?;
 
     let path = session_config_path(config, &cfg.session_id);
-    let content = toml::to_string_pretty(cfg)
-        .with_context(|| "Failed to serialize session config")?;
+    let content =
+        toml::to_string_pretty(cfg).with_context(|| "Failed to serialize session config")?;
     std::fs::write(&path, content)
         .with_context(|| format!("Failed to write session config {}", path.display()))?;
     Ok(())
@@ -305,7 +322,9 @@ pub fn session_start(
 
     let created_at = format!(
         "{:?}",
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
     );
 
     let mut cfg = SessionConfig {
@@ -393,11 +412,7 @@ pub fn session_start(
 /// Spawns a fresh bwrap instance with the same overlay mount bound at
 /// `/session/`. The resolved toolchains are at `/runtime/` (ro), the
 /// current directory at `/workspace/` (rw).
-pub fn session_exec(
-    session_id: &str,
-    command: &[String],
-    config: &Config,
-) -> Result<String> {
+pub fn session_exec(session_id: &str, command: &[String], config: &Config) -> Result<String> {
     let cfg = read_session(config, session_id)?;
 
     if command.is_empty() {
@@ -431,11 +446,7 @@ pub fn session_exec(
     let cwd = std::env::current_dir()?;
     let session_mount = cfg.mount_point.clone();
 
-    let extra_ro_binds: Vec<PathBuf> = cfg
-        .toolchain_dirs
-        .iter()
-        .map(PathBuf::from)
-        .collect();
+    let extra_ro_binds: Vec<PathBuf> = cfg.toolchain_dirs.iter().map(PathBuf::from).collect();
 
     let profile = SandboxProfile {
         project_dir: Some(cwd.clone()),
@@ -448,9 +459,7 @@ pub fn session_exec(
     let mut cmd = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);
 
     // Bind the overlay mount at /session/ inside the sandbox
-    cmd.arg("--bind")
-        .arg(&session_mount)
-        .arg("/session/");
+    cmd.arg("--bind").arg(&session_mount).arg("/session/");
 
     // Bind the session upper dir at /session-upper/ for direct file access
     cmd.arg("--ro-bind")
@@ -514,9 +523,7 @@ pub fn session_stop(session_id: &str, purge: bool, config: &Config) -> Result<St
 
     // If upper is tmpfs, unmount the tmpfs too
     if cfg.upper_is_tmpfs {
-        let _ = Command::new("umount")
-            .arg(&cfg.overlay_upper)
-            .status();
+        let _ = Command::new("umount").arg(&cfg.overlay_upper).status();
     }
 
     // Remove the mount point directory
@@ -528,7 +535,10 @@ pub fn session_stop(session_id: &str, purge: bool, config: &Config) -> Result<St
         let _ = std::fs::remove_dir_all(&dir);
         Ok(format!("Session '{session_id}' stopped and purged"))
     } else {
-        Ok(format!("Session '{session_id}' stopped (upper dir preserved at {})", cfg.overlay_upper))
+        Ok(format!(
+            "Session '{session_id}' stopped (upper dir preserved at {})",
+            cfg.overlay_upper
+        ))
     }
 }
 
@@ -541,8 +551,14 @@ mod tests {
     #[test]
     fn test_generate_session_id_format() {
         let id = generate_session_id();
-        assert!(id.len() > 8, "session ID should be at least 8 chars, got: {id}");
-        assert!(id.contains('-'), "session ID should contain a dash separator");
+        assert!(
+            id.len() > 8,
+            "session ID should be at least 8 chars, got: {id}"
+        );
+        assert!(
+            id.contains('-'),
+            "session ID should contain a dash separator"
+        );
     }
 
     #[test]

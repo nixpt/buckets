@@ -68,8 +68,12 @@ pub struct HerdSpec {
     pub max_restarts: u32,
 }
 
-fn default_check_interval() -> u64 { 5 }
-fn default_max_restarts() -> u32 { 10 }
+fn default_check_interval() -> u64 {
+    5
+}
+fn default_max_restarts() -> u32 {
+    10
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -153,7 +157,8 @@ impl HerdController {
         if state_dir.exists() {
             bail!(
                 "Herd '{}' already exists — stop it first with 'buckets herd stop {}'",
-                spec.name, spec.name
+                spec.name,
+                spec.name
             );
         }
 
@@ -183,21 +188,24 @@ impl HerdController {
             for idx in 0..spec.replicas {
                 match spawn_replica(&s.spec, idx) {
                     Ok(child) => {
-                        s.children.insert(idx, ChildEntry {
-                            child,
-                            restart_count: 0,
-                            last_backoff: Duration::from_secs(1),
-                            status: InstanceStatus::Running,
-                            failed_at: None,
-                        });
+                        s.children.insert(
+                            idx,
+                            ChildEntry {
+                                child,
+                                restart_count: 0,
+                                last_backoff: Duration::from_secs(1),
+                                status: InstanceStatus::Running,
+                                failed_at: None,
+                            },
+                        );
+                        eprintln!("  ✓ replica {}/{} started", idx + 1, spec.replicas);
+                    }
+                    Err(e) => {
                         eprintln!(
-                            "  ✓ replica {}/{} started",
+                            "  ✗ replica {}/{} failed to start: {e}",
                             idx + 1,
                             spec.replicas
                         );
-                    }
-                    Err(e) => {
-                        eprintln!("  ✗ replica {}/{} failed to start: {e}", idx + 1, spec.replicas);
                     }
                 }
             }
@@ -205,7 +213,10 @@ impl HerdController {
 
         ctrl.persist_state()?;
 
-        eprintln!("✓ herd '{}' running ({} replicas)", spec.name, spec.replicas);
+        eprintln!(
+            "✓ herd '{}' running ({} replicas)",
+            spec.name, spec.replicas
+        );
         Ok(ctrl)
     }
 
@@ -295,16 +306,21 @@ impl HerdController {
                     if policy != RestartPolicy::Never {
                         match spawn_replica(&s.spec, idx) {
                             Ok(child) => {
-                                s.children.insert(idx, ChildEntry {
-                                    child,
-                                    restart_count: 0,
-                                    last_backoff: Duration::from_secs(1),
-                                    status: InstanceStatus::Running,
-                                    failed_at: None,
-                                });
+                                s.children.insert(
+                                    idx,
+                                    ChildEntry {
+                                        child,
+                                        restart_count: 0,
+                                        last_backoff: Duration::from_secs(1),
+                                        status: InstanceStatus::Running,
+                                        failed_at: None,
+                                    },
+                                );
                                 eprintln!("  ↺ herd '{herd_name}' replica {idx}: spawned");
                             }
-                            Err(e) => eprintln!("  ✗ herd '{herd_name}' replica {idx}: spawn failed: {e}"),
+                            Err(e) => {
+                                eprintln!("  ✗ herd '{herd_name}' replica {idx}: spawn failed: {e}")
+                            }
                         }
                     }
                 }
@@ -359,7 +375,9 @@ impl HerdController {
                             }
                         }
                         Err(err) => {
-                            eprintln!("  ✗ herd '{herd_name}' replica {idx}: restart failed: {err}");
+                            eprintln!(
+                                "  ✗ herd '{herd_name}' replica {idx}: restart failed: {err}"
+                            );
                         }
                     }
                 }
@@ -386,13 +404,16 @@ impl HerdController {
             for idx in current..new_replicas {
                 match spawn_replica(&s.spec, idx) {
                     Ok(child) => {
-                        s.children.insert(idx, ChildEntry {
-                            child,
-                            restart_count: 0,
-                            last_backoff: Duration::from_secs(1),
-                            status: InstanceStatus::Running,
-                            failed_at: None,
-                        });
+                        s.children.insert(
+                            idx,
+                            ChildEntry {
+                                child,
+                                restart_count: 0,
+                                last_backoff: Duration::from_secs(1),
+                                status: InstanceStatus::Running,
+                                failed_at: None,
+                            },
+                        );
                         eprintln!("  ✓ scale up: replica {idx} started");
                     }
                     Err(e) => eprintln!("  ✗ scale up: replica {idx} failed: {e}"),
@@ -435,25 +456,34 @@ impl HerdController {
         let s = self.state.lock().unwrap();
         let instances: Vec<InstanceState> = (0..s.spec.replicas)
             .map(|idx| {
-                s.children.get(&idx).map(|e| InstanceState {
-                    index: idx,
-                    pid: e.pid(),
-                    status: e.status,
-                    restart_count: e.restart_count,
-                    last_exit_code: None,
-                }).unwrap_or(InstanceState {
-                    index: idx, pid: None,
-                    status: InstanceStatus::Stopped,
-                    restart_count: 0, last_exit_code: None,
-                })
+                s.children
+                    .get(&idx)
+                    .map(|e| InstanceState {
+                        index: idx,
+                        pid: e.pid(),
+                        status: e.status,
+                        restart_count: e.restart_count,
+                        last_exit_code: None,
+                    })
+                    .unwrap_or(InstanceState {
+                        index: idx,
+                        pid: None,
+                        status: InstanceStatus::Stopped,
+                        restart_count: 0,
+                        last_exit_code: None,
+                    })
             })
             .collect();
-        let state = HerdState { spec: s.spec.clone(), instances };
+        let state = HerdState {
+            spec: s.spec.clone(),
+            instances,
+        };
         drop(s);
         fs::write(
             self.state_dir.join("state.json"),
             serde_json::to_string_pretty(&state)?,
-        ).context("Failed to persist herd state")
+        )
+        .context("Failed to persist herd state")
     }
 }
 
@@ -487,7 +517,10 @@ fn spawn_replica(spec: &HerdSpec, idx: u32) -> Result<Child> {
     cmd.stdin(Stdio::null());
 
     cmd.spawn().with_context(|| {
-        format!("Failed to spawn replica {idx} of herd '{}' (buckets run {} ...)", spec.name, spec.bucket)
+        format!(
+            "Failed to spawn replica {idx} of herd '{}' (buckets run {} ...)",
+            spec.name, spec.bucket
+        )
     })
 }
 
@@ -505,14 +538,24 @@ pub struct HerdInfo {
 
 /// List all persisted herds under `herds_dir`.
 pub fn list_all(herds_dir: &Path) -> Vec<HerdInfo> {
-    if !herds_dir.exists() { return vec![]; }
-    let Ok(entries) = fs::read_dir(herds_dir) else { return vec![] };
+    if !herds_dir.exists() {
+        return vec![];
+    }
+    let Ok(entries) = fs::read_dir(herds_dir) else {
+        return vec![];
+    };
     let mut result = Vec::new();
     for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
         let state_path = entry.path().join("state.json");
-        let Ok(content) = fs::read_to_string(&state_path) else { continue };
-        let Ok(state) = serde_json::from_str::<HerdState>(&content) else { continue };
+        let Ok(content) = fs::read_to_string(&state_path) else {
+            continue;
+        };
+        let Ok(state) = serde_json::from_str::<HerdState>(&content) else {
+            continue;
+        };
         result.push(HerdInfo {
             name: state.spec.name.clone(),
             bucket: state.spec.bucket.clone(),
@@ -530,14 +573,17 @@ mod tests {
 
     #[test]
     fn herd_spec_defaults() {
-        let spec = serde_json::from_str::<HerdSpec>(r#"{
+        let spec = serde_json::from_str::<HerdSpec>(
+            r#"{
             "name": "test",
             "bucket": "node@20",
             "command": [],
             "env": {},
             "replicas": 3,
             "net": null
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         assert_eq!(spec.check_interval_secs, 5);
         assert_eq!(spec.max_restarts, 10);
         assert_eq!(spec.restart, RestartPolicy::OnFailure);

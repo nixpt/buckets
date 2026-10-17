@@ -26,7 +26,12 @@ use std::process::Command;
 /// path-deps (`../other-repo`, this workspace's own convention) to keep
 /// resolving correctly from inside the worktree. `Some(dir)` overrides
 /// with an explicit parent directory instead.
-pub fn create(repo: &Path, branch: &str, base: Option<&str>, worktree_parent: Option<&Path>) -> Result<PathBuf> {
+pub fn create(
+    repo: &Path,
+    branch: &str,
+    base: Option<&str>,
+    worktree_parent: Option<&Path>,
+) -> Result<PathBuf> {
     let repo = repo
         .canonicalize()
         .with_context(|| format!("'{}' is not a directory that exists", repo.display()))?;
@@ -36,15 +41,24 @@ pub fn create(repo: &Path, branch: &str, base: Option<&str>, worktree_parent: Op
 
     let parent = match worktree_parent {
         Some(dir) => dir.to_path_buf(),
-        None => repo.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")),
+        None => repo
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(".")),
     };
     std::fs::create_dir_all(&parent)
         .with_context(|| format!("Failed to create {}", parent.display()))?;
 
-    let repo_name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "repo".to_string());
+    let repo_name = repo
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "repo".to_string());
     let dest = parent.join(format!("{repo_name}-{}", slugify(branch)));
     if dest.exists() {
-        bail!("{} already exists — remove it first or pick a different branch name", dest.display());
+        bail!(
+            "{} already exists — remove it first or pick a different branch name",
+            dest.display()
+        );
     }
 
     let mut cmd = Command::new("git");
@@ -84,7 +98,9 @@ pub fn remove(repo: &Path, worktree_path: &Path, branch: &str, force: bool) -> R
     }
     rm_cmd.arg(worktree_path);
     eprintln!("▶ removing worktree: {}", worktree_path.display());
-    let status = rm_cmd.status().context("Failed to run git worktree remove")?;
+    let status = rm_cmd
+        .status()
+        .context("Failed to run git worktree remove")?;
     if !status.success() {
         bail!(
             "git worktree remove failed — if it has uncommitted changes, use --force \
@@ -120,20 +136,28 @@ pub fn list(repo: &Path) -> Result<String> {
         .canonicalize()
         .with_context(|| format!("'{}' is not a directory that exists", repo.display()))?;
     let output = Command::new("git")
-        .arg("-C").arg(&repo)
-        .arg("worktree").arg("list")
+        .arg("-C")
+        .arg(&repo)
+        .arg("worktree")
+        .arg("list")
         .output()
         .context("Failed to run git worktree list")?;
     if !output.status.success() {
-        bail!("git worktree list failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "git worktree list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     let status = Command::new("git")
-        .arg("-C").arg(repo)
-        .arg("show-ref").arg("--verify").arg("--quiet")
+        .arg("-C")
+        .arg(repo)
+        .arg("show-ref")
+        .arg("--verify")
+        .arg("--quiet")
         .arg(format!("refs/heads/{branch}"))
         .status()
         .context("Failed to run git show-ref")?;
@@ -143,7 +167,13 @@ fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
 /// Filesystem-safe worktree directory name component.
 fn slugify(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -153,7 +183,12 @@ mod tests {
 
     fn init_repo(dir: &Path) {
         let run = |args: &[&str]| {
-            let status = Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .status()
+                .unwrap();
             assert!(status.success(), "git {args:?} failed");
         };
         run(&["init", "-q", "-b", "main"]);

@@ -54,10 +54,10 @@ impl PackageReq {
     /// Bare numbers like `20` are treated as `^20`.
     pub fn parse(spec: &str) -> Result<Self> {
         let spec = spec.trim();
-        let re = Regex::new(r"^(.+?)((?:@[\w~^=<>.*-]+)|\*)?$")
-            .expect("invalid PackageReq regex");
+        let re = Regex::new(r"^(.+?)((?:@[\w~^=<>.*-]+)|\*)?$").expect("invalid PackageReq regex");
 
-        let caps = re.captures(spec)
+        let caps = re
+            .captures(spec)
             .unwrap_or_else(|| re.captures("").unwrap());
 
         let project_raw = caps.get(1).map(|m| m.as_str()).unwrap_or(spec);
@@ -132,23 +132,37 @@ pub enum HostArch {
 /// Detect the current host OS.
 pub fn detect_host_os() -> HostOs {
     #[cfg(target_os = "linux")]
-    { HostOs::Linux }
+    {
+        HostOs::Linux
+    }
     #[cfg(target_os = "macos")]
-    { HostOs::MacOs }
+    {
+        HostOs::MacOs
+    }
     #[cfg(target_os = "windows")]
-    { HostOs::Windows }
+    {
+        HostOs::Windows
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    { HostOs::Linux }
+    {
+        HostOs::Linux
+    }
 }
 
 /// Detect the current host architecture.
 pub fn detect_host_arch() -> HostArch {
     #[cfg(target_arch = "x86_64")]
-    { HostArch::Amd64 }
+    {
+        HostArch::Amd64
+    }
     #[cfg(target_arch = "aarch64")]
-    { HostArch::Aarch64 }
+    {
+        HostArch::Aarch64
+    }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    { HostArch::Amd64 }
+    {
+        HostArch::Amd64
+    }
 }
 
 /// Bottle URL suffix (arch/os prefix used by pkgx dist).
