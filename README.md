@@ -152,14 +152,105 @@ env is still injected into every pipeline subprocess.
 
 ## Real process isolation
 
-`run`/`shell`/`build` all execute under [bubblewrap](https://github.com/containers/bubblewrap)
-(`bwrap`) — a fresh mount + PID namespace, not just an isolated toolchain
-version. Only the resolved toolchain's own install dirs (read-only) and
-the invocation/project directory (read-write) are visible inside; nothing
-else on the host is. Network is off by default for `run`/`shell` (most
-tool invocations don't need it) and on for `build` (package registries
-do). Falls back to a plain unsandboxed subprocess with a warning if
-`bwrap` isn't installed — use `--no-sandbox` to opt out explicitly.
+`run`/`shell`/`build` (and `gui`, `site`, `session`, Bucketfile `RUN`) all
+execute under [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`). Only the resolved toolchain's own install dirs (read-only), the
+base OS dirs (`/usr`, `/bin`, `/lib*`, read-only) and the invocation/project
+directory (read-write) are visible inside, plus a private `/tmp` tmpfs.
+Network is off by default for `run`/`shell` and on for `build`/Bucketfile
+`RUN`/`site` (package registries and browsers need it).
+
+### Fail closed
+
+If `bwrap` is not installed, `buckets` **refuses** to run and says how to
+fix it. Nothing silently downgrades. The two weaker modes are explicit:
+
+| flag | backend | what you lose |
+|---|---|---|
+| *(default)* | bwrap | — |
+| `--allow-weaker-sandbox` | proot, only if bwrap is missing | network, PID and IPC namespaces are the host's; no seccomp. A warning is printed. cgroup limits and `--timeout` still apply |
+| `--no-sandbox` | plain subprocess | all isolation. The environment is still clean (unless `--inherit-env`), cgroup limits and `--timeout` still apply, seccomp does not |
+
+A bwrap too old for a required flag (`--clearenv`, `--die-with-parent`,
+`--new-session`, `--unshare-ipc`, `--unshare-uts`, `--seccomp`) is also a
+refusal, not a downgrade. Optional flags (`--cap-drop`, `--disable-userns`,
+`--unshare-cgroup-try`, `--hostname`) are used when the installed bwrap has
+them (probed once from `bwrap --help`).
+
+### What is isolated (bwrap backend)
+
+- **Namespaces:** mount, PID, IPC, UTS (hostname `bucket`), cgroup, network
+  (unless allowed / `--net`), and a user namespace with nested user
+  namespaces disabled (`--disable-userns`).
+- **Process hygiene:** `--die-with-parent` (killing `buckets` kills the
+  sandbox), `--new-session` (no `TIOCSTI` injection into your terminal;
+  `shell` keeps your session for job control), `--cap-drop ALL` (the
+  sandboxed process has empty capability sets).
+- **Environment:** `--clearenv`, then only the composed toolchain env
+  (`PATH`, `LD_LIBRARY_PATH`, `PYTHONPATH`, `NODE_PATH`, ...), `HOME=/tmp`,
+  and `TERM`, `COLORTERM`, `NO_COLOR`, `LANG`, `LANGUAGE`, `LC_*`, `TZ` from the
+  host. Tokens and other host variables do not reach the sandbox (the bwrap
+  process itself also starts with an empty environment).
+  `--inherit-env` restores the old pass-everything behaviour.
+- **seccomp** (`--seccomp off|default|strict`, default `default`): a BPF
+  program built with [zandbox](https://crates.io/crates/zandbox) and handed
+  to bwrap on an inherited memfd (`--seccomp FD`). bwrap installs it just
+  before exec'ing your command.
+  - `default`: zandbox's `Application` profile (files, processes, threads,
+    signals, timers, sockets) plus a compatibility list, minus `unshare`.
+    Anything else fails with `EPERM`: `ptrace`, `mount`, `setns`, `bpf`,
+    `perf_event_open`, `keyctl`, module loading, `io_uring_*` (libuv and
+    cargo fall back), ... Measured with `strace -f` to cover python3
+    (threads, subprocess, multiprocessing, venv, pip), node (child_process,
+    worker_threads), bash, uv, npm, git and `cargo build`.
+  - `strict`: zandbox's `Default` profile (no sockets); violations kill the
+    process with `SIGSYS`. Anything that opens a socket dies, including NSS
+    lookups (`ls -l`, `id`).
+  - `gui` and `site` run with seccomp off (GUI toolkits, and browsers that
+    bring their own sandbox).
+
+### Resource limits
+
+```bash
+buckets run --memory 512M --pids 256 --cpu 50% --timeout 30s python@3.12 -- python job.py
+```
+
+- `--timeout` kills the whole sandbox when it expires (exit status 124).
+  Works without a cgroup.
+- `--memory` (`memory.max`, with `memory.swap.max=0`), `--pids`
+  (`pids.max`; bwrap itself uses 2) and `--cpu` (`cpu.max`, percent of one
+  CPU) are cgroup v2 limits on the **whole** sandbox, bwrap included. zandbox
+  creates a per-run cgroup and the `bwrap` process joins it in `pre_exec`,
+  before exec, so there is no attach race. They need a delegated cgroup v2
+  directory: `--cgroup-parent DIR` or `$BUCKETS_CGROUP_PARENT`. Without one,
+  the run is refused. With systemd:
+
+  ```bash
+  systemd-run --user --scope -p Delegate=yes bash -c '
+    CG=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)
+    mkdir $CG/leaf $CG/sandboxes
+    echo 0 > $CG/leaf/cgroup.procs           # move this shell out of the scope root
+    echo "+pids +memory +cpu" > $CG/cgroup.subtree_control
+    export BUCKETS_CGROUP_PARENT=$CG/sandboxes
+    buckets run --memory 512M --pids 64 python@3.12 -- python job.py'
+  ```
+
+The sandbox flags (`--allow-weaker-sandbox`, `--inherit-env`, `--seccomp`,
+`--memory`, `--pids`, `--cpu`, `--timeout`, `--cgroup-parent`) exist on
+`run`, `net run` and `shell`.
+
+### Library API
+
+`sandbox::try_sandboxed_command(program, args, cwd, env, &profile)` returns
+`Result<Sandbox, SandboxError>`. `Sandbox::status()` / `spawn()` +
+`SandboxChild::wait()` honour the timeout; `into_command()` gives the bare
+`std::process::Command`. `SandboxProfile` gained `binds`, `fallback`,
+`env_policy`, `seccomp`, `limits`, `keep_terminal_session`, `share_ipc` and
+`allow_nested_userns`, all defaulting to the strict choice, so
+`SandboxProfile { .., ..Default::default() }` literals keep compiling. The
+old infallible `sandboxed_command` still exists: when the sandbox can't be
+built it returns a command that runs nothing and exits 126 with the reason
+on stderr.
 
 ## Real GUI isolation
 
