@@ -41,6 +41,9 @@ toml = "0.8"
 fd-lock = "4"
 shlex = "1"
 libc = "0.2"
+# Sandbox hardening (BUCKETS-17): cgroup v2 limits joined in the bwrap
+# process's pre_exec, and the seccomp BPF program handed to bwrap --seccomp.
+zandbox = "0.1.0"
 # Sibling peer repo — only pulled in by the opt-in `buildsched` feature above.
 buildsched = { path = "../buildsched", optional = true }
 

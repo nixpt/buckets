@@ -16,6 +16,9 @@ mod install;
 mod inventory;
 mod project;
 mod resolve;
+// Library API (sandboxed_command, Sandbox::backend, ...) the CLI itself
+// doesn't call; consumers such as crush-vm do.
+#[allow(dead_code)]
 mod sandbox;
 mod session;
 mod site;
@@ -109,9 +112,14 @@ enum Command {
         #[arg(long)]
         net: Option<String>,
 
-        /// Run unsandboxed (plain subprocess, no bwrap containment).
+        /// Run unsandboxed (plain subprocess, no bwrap containment). The
+        /// environment is still clean unless --inherit-env is given; cgroup
+        /// limits and --timeout still apply; seccomp does not.
         #[arg(long)]
         no_sandbox: bool,
+
+        #[command(flatten)]
+        sandbox: SandboxOpts,
     },
 
     /// Open an interactive shell with the runtime in PATH.
@@ -126,6 +134,9 @@ enum Command {
         /// Run unsandboxed (plain subprocess, no bwrap containment).
         #[arg(long)]
         no_sandbox: bool,
+
+        #[command(flatten)]
+        sandbox: SandboxOpts,
     },
 
     /// Print the composed environment as shell exports or JSON.
@@ -445,6 +456,91 @@ enum HerdSubcommand {
 }
 
 
+/// Sandbox hardening options shared by `run`, `net run` and `shell`
+/// (BUCKETS-17). See the README's "Real process isolation" section.
+#[derive(clap::Args, Debug, Clone, Default)]
+struct SandboxOpts {
+    /// If bwrap is missing, accept proot instead of refusing (mount view
+    /// only: no network/PID/IPC isolation, no seccomp).
+    #[arg(long)]
+    allow_weaker_sandbox: bool,
+
+    /// Pass the host environment through (default: only the composed
+    /// toolchain env + TERM/LANG/LC_*/TZ + HOME + PATH).
+    #[arg(long)]
+    inherit_env: bool,
+
+    /// seccomp filter inside the sandbox: off, default (EPERM on anything
+    /// outside the allowlist) or strict (no sockets; violations kill).
+    #[arg(long, value_name = "MODE", default_value = "default", value_parser = parse_seccomp)]
+    seccomp: sandbox::SeccompMode,
+
+    /// cgroup memory.max for the whole sandbox, e.g. 512M, 2G.
+    #[arg(long, value_name = "SIZE", value_parser = sandbox::parse_size)]
+    memory: Option<u64>,
+
+    /// cgroup pids.max (bwrap itself uses 2).
+    #[arg(long, value_name = "N")]
+    pids: Option<u64>,
+
+    /// cgroup cpu.max as a percentage of one CPU, e.g. 50%, 200%.
+    #[arg(long, value_name = "PERCENT", value_parser = sandbox::parse_cpu_percent)]
+    cpu: Option<u32>,
+
+    /// Wall-clock limit; the whole sandbox is killed when it expires
+    /// (exit status 124). E.g. 30s, 2m, 500ms.
+    #[arg(long, value_name = "DURATION", value_parser = sandbox::parse_duration)]
+    timeout: Option<std::time::Duration>,
+
+    /// Delegated cgroup v2 directory for --memory/--pids/--cpu
+    /// (default: $BUCKETS_CGROUP_PARENT).
+    #[arg(long, value_name = "DIR")]
+    cgroup_parent: Option<PathBuf>,
+}
+
+fn parse_seccomp(s: &str) -> std::result::Result<sandbox::SeccompMode, String> {
+    s.parse()
+}
+
+impl SandboxOpts {
+    /// Apply these options to a base profile.
+    fn apply(&self, mut p: sandbox::SandboxProfile) -> sandbox::SandboxProfile {
+        if self.allow_weaker_sandbox {
+            p.fallback = sandbox::Fallback::Proot;
+        }
+        if self.inherit_env {
+            p.env_policy = sandbox::EnvPolicy::Inherit;
+        }
+        p.seccomp = self.seccomp;
+        p.limits = sandbox::Limits {
+            memory_bytes: self.memory,
+            pids: self.pids,
+            cpu_percent: self.cpu,
+            cgroup_parent: self.cgroup_parent.clone(),
+            timeout: self.timeout,
+        };
+        p
+    }
+}
+
+/// Wait for a sandbox, report a timeout, and exit with the child's status.
+fn finish_sandboxed(sb: sandbox::Sandbox, what: &str) -> Result<()> {
+    let outcome = sb.status().with_context(|| format!("Failed to execute {what}"))?;
+    if outcome.timed_out {
+        eprintln!("▶ timeout reached — sandbox killed");
+        std::process::exit(124);
+    }
+    if !outcome.status.success() {
+        use std::os::unix::process::ExitStatusExt;
+        let code = outcome
+            .status
+            .code()
+            .unwrap_or_else(|| 128 + outcome.status.signal().unwrap_or(1));
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 #[derive(Subcommand)]
 enum NetSubcommand {
     /// Create a named virtual network (persists until 'buckets net rm').
@@ -476,6 +572,8 @@ enum NetSubcommand {
         /// Run unsandboxed.
         #[arg(long)]
         no_sandbox: bool,
+        #[command(flatten)]
+        sandbox: SandboxOpts,
     },
 
     /// Forward a port from the host loopback into the virtual network.
@@ -623,7 +721,7 @@ fn main() -> Result<()> {
     let index = Index::builtin();
 
     match cli.command {
-        Command::Run { specs, command, no_sandbox, net } => {
+        Command::Run { specs, command, no_sandbox, net, sandbox } => {
             let nets_dir = config.cache_dir.join("nets");
             let net_ns = if let Some(ref name) = net {
                 let session = net::NetSession::load(name, &nets_dir)?;
@@ -631,9 +729,11 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            cmd_run(&specs, &command, no_sandbox, net_ns, &config, &index)
+            cmd_run(&specs, &command, no_sandbox, net_ns, &sandbox, &config, &index)
         }
-        Command::Shell { specs, shell, no_sandbox } => cmd_shell(&specs, shell.as_deref(), no_sandbox, &config, &index),
+        Command::Shell { specs, shell, no_sandbox, sandbox } => {
+            cmd_shell(&specs, shell.as_deref(), no_sandbox, &sandbox, &config, &index)
+        }
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
         Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
@@ -661,6 +761,7 @@ fn cmd_run(
     command: &[String],
     no_sandbox: bool,
     net_ns: Option<String>,
+    opts: &SandboxOpts,
     config: &Config,
     index: &Index,
 ) -> Result<()> {
@@ -719,37 +820,29 @@ fn cmd_run(
         }
     }
 
-    let mut cmd = if no_sandbox {
-        let mut c = std::process::Command::new(program);
-        c.args(args);
-        c
-    } else {
-        let cwd = if let Some(ref meta) = metadata {
-            let base_ws = bucket_workspace_path.clone().unwrap();
-            if let Some(ref wd) = meta.workdir {
-                base_ws.join(wd)
-            } else {
-                base_ws
-            }
+    let cwd = if let Some(ref meta) = metadata {
+        let base_ws = bucket_workspace_path.clone().unwrap();
+        if let Some(ref wd) = meta.workdir {
+            base_ws.join(wd)
         } else {
-            std::env::current_dir()?
-        };
-        let profile = sandbox::SandboxProfile {
-            project_dir: Some(cwd.clone()),
-            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
-            extra_rw_binds: Vec::new(),
-            allow_network: false,
-            net_ns: net_ns.clone(),
-        };
-        sandbox::sandboxed_command(program, args, &cwd, &final_env, &profile)
+            base_ws
+        }
+    } else {
+        std::env::current_dir()?
+    };
+    let profile = opts.apply(sandbox::SandboxProfile {
+        project_dir: Some(cwd.clone()),
+        extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+        net_ns: net_ns.clone(),
+        ..Default::default()
+    });
+    let mut sb = if no_sandbox {
+        sandbox::unsandboxed(program, args, None, &final_env, &profile)?
+    } else {
+        sandbox::try_sandboxed_command(program, args, &cwd, &final_env, &profile)?
     };
 
-    if no_sandbox {
-        for (key, value) in &final_env {
-            cmd.env(key, value);
-        }
-    }
-
+    let cmd = sb.command_mut();
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
@@ -760,13 +853,7 @@ fn cmd_run(
     } else {
         eprintln!("▶ running in {bucket_name} bucket");
     }
-    let status = cmd.status().with_context(|| format!("Failed to execute {program}"))?;
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
-
-    Ok(())
+    finish_sandboxed(sb, program)
 }
 
 /// Manage buck-net virtual networks.
@@ -802,12 +889,12 @@ fn cmd_net(cmd: NetSubcommand, config: &Config) -> Result<()> {
             Ok(())
         }
 
-        NetSubcommand::Run { name, specs, command, no_sandbox } => {
+        NetSubcommand::Run { name, specs, command, no_sandbox, sandbox } => {
             let session = net::NetSession::load(&name, &nets_dir)?;
             let net_ns = if no_sandbox { None } else { Some(session.ns_path()) };
             // Re-use cmd_run; we need a fake Index so pull it here
             let index = crate::index::Index::builtin();
-            cmd_run(&specs, &command, no_sandbox, net_ns, config, &index)
+            cmd_run(&specs, &command, no_sandbox, net_ns, &sandbox, config, &index)
         }
 
         NetSubcommand::Expose { name, mapping } => {
@@ -836,7 +923,14 @@ fn parse_port_mapping(s: &str) -> Result<(u16, u16)> {
     Ok((host_port, bucket_port))
 }
 
-fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
+fn cmd_shell(
+    specs: &[String],
+    shell: Option<&str>,
+    no_sandbox: bool,
+    opts: &SandboxOpts,
+    config: &Config,
+    index: &Index,
+) -> Result<()> {
     if specs.is_empty() {
 
         anyhow::bail!("At least one spec is required (e.g. 'node@20')");
@@ -852,41 +946,32 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &C
     let bucket_name = specs.join("+");
     let bucket_prompt = format!("[{}] ", bucket_name);
 
-    let mut cmd = if no_sandbox {
-        let mut c = std::process::Command::new(&shell_program);
-        for (key, value) in &resolved.env {
-            c.env(key, value);
-        }
-        c
+    let mut env = resolved.env.clone();
+    env.insert("BUCKET_PROMPT".to_string(), bucket_prompt.clone());
+    if shell_program.contains("bash") || shell_program.contains("zsh") {
+        env.insert("PS1".to_string(), format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "));
+    }
+    let cwd = std::env::current_dir()?;
+    let profile = opts.apply(sandbox::SandboxProfile {
+        project_dir: Some(cwd.clone()),
+        extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+        // Interactive job control needs the caller's terminal session.
+        keep_terminal_session: true,
+        ..Default::default()
+    });
+    let mut sb = if no_sandbox {
+        sandbox::unsandboxed(&shell_program, &[], None, &env, &profile)?
     } else {
-        let cwd = std::env::current_dir()?;
-        let profile = sandbox::SandboxProfile {
-            project_dir: Some(cwd.clone()),
-            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
-            extra_rw_binds: Vec::new(),
-            allow_network: false,
-            net_ns: None,
-        };
-        sandbox::sandboxed_command(&shell_program, &[], &cwd, &resolved.env, &profile)
+        sandbox::try_sandboxed_command(&shell_program, &[], &cwd, &env, &profile)?
     };
 
-    cmd.env("BUCKET_PROMPT", &bucket_prompt);
-    if shell_program.contains("bash") || shell_program.contains("zsh") {
-        cmd.env("PS1", format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "));
-    }
-
+    let cmd = sb.command_mut();
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
     eprintln!("▶ starting {bucket_name} bucket shell ({})", shell_program);
-    let status = cmd.status()?;
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
-
-    Ok(())
+    finish_sandboxed(sb, &shell_program)
 }
 
 /// Print the composed environment.
@@ -1295,11 +1380,10 @@ fn run_project_step(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(project_dir.to_path_buf()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
-            extra_rw_binds: Vec::new(),
             allow_network: true,
-            net_ns: None,
+            ..Default::default()
         };
-        sandbox::sandboxed_command(program, args, project_dir, &resolved.env, &profile)
+        sandbox::try_sandboxed_command(program, args, project_dir, &resolved.env, &profile)?.into_command()
     };
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -1464,11 +1548,14 @@ fn cmd_gui(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
-            extra_rw_binds: Vec::new(),
-            allow_network: false,
-            net_ns: None,
+            // X11 MIT-SHM against the outside Xvfb needs the host IPC ns;
+            // GUI toolkits make syscalls the runtime-oriented seccomp
+            // profile doesn't cover.
+            share_ipc: true,
+            seccomp: sandbox::SeccompMode::Off,
+            ..Default::default()
         };
-        sandbox::sandboxed_command(program, args, &cwd, &env, &profile)
+        sandbox::try_sandboxed_command(program, args, &cwd, &env, &profile)?.into_command()
     };
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -1582,12 +1669,17 @@ fn cmd_site(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(target.storage_dir.clone()),
             extra_ro_binds,
-            extra_rw_binds: Vec::new(),
             allow_network: !no_network,
-            net_ns: None,
+            // Browsers run their own sandbox (user namespaces + their own
+            // seccomp) and need X11 MIT-SHM.
+            share_ipc: true,
+            allow_nested_userns: true,
+            seccomp: sandbox::SeccompMode::Off,
+            ..Default::default()
         };
         let args_rest = &args[..];
-        sandbox::sandboxed_command(browser_path.to_string_lossy().as_ref(), args_rest, &target.storage_dir, &env, &profile)
+        sandbox::try_sandboxed_command(browser_path.to_string_lossy().as_ref(), args_rest, &target.storage_dir, &env, &profile)?
+            .into_command()
     };
 
     cmd.stdin(std::process::Stdio::inherit());
