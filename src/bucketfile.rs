@@ -216,12 +216,13 @@ pub fn build_bucketfile(
                     extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
                     extra_rw_binds: vec![target_dir.clone()],
                     allow_network: true,
-                    net_ns: None,
+                    ..Default::default()
                 };
                 
                 // Execute command inside sandbox
                 let args = vec!["-c".to_string(), cmd_str.clone()];
-                let mut cmd = crate::sandbox::sandboxed_command("/bin/sh", &args, &current_workdir, &build_env, &profile);
+                let mut cmd = crate::sandbox::try_sandboxed_command("/bin/sh", &args, &current_workdir, &build_env, &profile)?
+                    .into_command();
                 
                 let status = cmd.status()
                     .with_context(|| format!("Failed to run build command: {}", cmd_str))?;
