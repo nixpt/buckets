@@ -43,6 +43,9 @@ buckets run node@20 -- script.js --flag arg
 buckets run python@3.11 -- python3 -c "print('hello from a bucket')"
 buckets run rust@latest -- rustc --version
 
+# Strict evaluation protocol for practice environments (JSON result)
+buckets eval --project ./work rust@latest -- cargo test
+
 # Multi-package environments
 buckets run node@20 python@3.11 -- node -e "console.log('and python is at', process.env.PATH)"
 buckets run go@1.22 cmake@latest -- go version
@@ -159,6 +162,14 @@ base OS dirs (`/usr`, `/bin`, `/lib*`, read-only) and the invocation/project
 directory (read-write) are visible inside, plus a private `/tmp` tmpfs.
 Network is off by default for `run`/`shell` and on for `build`/Bucketfile
 `RUN`/`site` (package registries and browsers need it).
+
+`eval` is stricter than the general-purpose commands: it is network-disabled,
+captures stdout/stderr, enforces a timeout, emits one JSON result
+(`passed`, `exit_code`, `timed_out`, `duration_ms`, `stdout`, `stderr` — one
+line on stdout), and refuses to run when `bwrap` is unavailable — there is no
+unsandboxed fallback and no `--no-sandbox`. Its own exit status is 0 iff the
+evaluation passed; a failed evaluation, a timeout, a refusal or an error all
+exit non-zero (refusals and errors print nothing on stdout).
 
 ### Fail closed
 

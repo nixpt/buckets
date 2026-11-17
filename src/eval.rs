@@ -15,7 +15,6 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -80,8 +79,94 @@ fn run_with(
     config: &Config,
     index: &Index,
 ) -> Result<EvaluationResult> {
-    let _ = (probe, project, specs, command, timeout_secs, config, index);
-    anyhow::bail!("BUCKETS-12 red placeholder: eval not implemented yet — the tests pin the contract")
+    if !project.is_dir() {
+        anyhow::bail!("evaluation project is not a directory: {}", project.display());
+    }
+    // Canonicalize before handing the directory to bwrap: a relative path
+    // (`--project .`) must reach the sandbox as an absolute one, resolved
+    // against the caller's cwd — bwrap execs with the cwd as given, and a
+    // bare "." does not survive the mount-namespace pivot (found live).
+    let project = &project
+        .canonicalize()
+        .with_context(|| format!("evaluation project is not accessible: {}", project.display()))?;
+    if command.is_empty() {
+        anyhow::bail!("evaluation command is required after '--'");
+    }
+    let resolved = if specs.is_empty() {
+        None
+    } else {
+        Some(resolve::resolve_multi(specs, config, index).with_context(|| {
+            format!("failed to resolve evaluation specs: {}", specs.join(", "))
+        })?)
+    };
+    let (program, args) = command.split_first().expect("command checked above");
+    let env = resolved
+        .as_ref()
+        .map(|e| e.env.clone())
+        .unwrap_or_default();
+    // Network off and fail closed are the contract: the default profile
+    // already has both (allow_network: false; Fallback::Refuse → a missing
+    // bwrap is an Err here, nothing is spawned, no JSON, non-zero exit).
+    let profile = SandboxProfile {
+        project_dir: Some(project.to_path_buf()),
+        extra_ro_binds: resolved
+            .as_ref()
+            .map(|e| e.installations.iter().map(|i| i.path.clone()).collect())
+            .unwrap_or_default(),
+        allow_network: false,
+        ..Default::default()
+    };
+    let sb = probe(program, args, project, &env, &profile).context(
+        "refusing evaluation: the real sandbox backend is required (no unsandboxed fallback)",
+    )?;
+    // `into_command` keeps the pre_exec hooks (the seccomp memfd stays alive
+    // for this child); the timeout is enforced by the loop below instead of
+    // `Sandbox::status`, because eval must report `timed_out` in its JSON
+    // result rather than exit(124).
+    let mut cmd = sb.into_command();
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let started = Instant::now();
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn evaluation command {program}"))?;
+    let deadline = started + Duration::from_secs(timeout_secs);
+    // Drain both pipes on threads so a chatty child can't fill its pipe
+    // buffer and deadlock the deadline loop (same pattern as sandbox.rs's
+    // own live-test helper).
+    fn drain(r: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut r) = r {
+                let _ = r.read_to_string(&mut s);
+            }
+            s
+        })
+    }
+    let out_t = drain(child.stdout.take());
+    let err_t = drain(child.stderr.take());
+    let mut timed_out = false;
+    loop {
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill(); // SIGKILL: bwrap's PID namespace takes the tree
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output()?;
+    Ok(EvaluationResult {
+        passed: !timed_out && output.status.success(),
+        exit_code: output.status.code(),
+        timed_out,
+        duration_ms: started.elapsed().as_millis(),
+        stdout: out_t.join().unwrap_or_default(),
+        stderr: err_t.join().unwrap_or_default(),
+    })
 }
 
 #[cfg(test)]
@@ -120,7 +205,7 @@ mod tests {
         Err(sandbox::SandboxError::BwrapNotFound { proot_on_path: false })
     }
 
-    /// 1. A passing command → one JSON result with exit code 0.
+    /// A passing command → one JSON result with exit code 0.
     #[test]
     fn passing_command_json_exit_zero() {
         if !bwrap_on_path() {
@@ -153,9 +238,9 @@ mod tests {
         assert!(!serde_json::to_string(&r).unwrap().contains('\n'));
     }
 
-    /// 2. A failing command → JSON carrying its non-zero exit; eval itself
-    /// exits non-zero in that case (main.rs bails after printing the JSON —
-    /// documented in the README; the child's status lives in the result).
+    /// A failing command → JSON carrying its non-zero exit. Eval's own
+    /// process exit is 0-iff-passed (main.rs bails after printing the JSON;
+    /// documented in the README) — the child's status lives in the result.
     #[test]
     fn failing_command_json_nonzero_exit() {
         if !bwrap_on_path() {
@@ -178,9 +263,9 @@ mod tests {
         assert!(r.stderr.contains("to-stderr"), "{r:?}");
     }
 
-    /// 3. Timeout → `timed_out: true`, the child (and its whole tree) dead.
+    /// A timeout → `timed_out: true`, the child (and its whole tree) dead.
     /// Straggler check scoped to this test's own descendants, BUCKETS-11
-    /// style: the sandboxed sleeps get a unique fractional-second tag and
+    /// style: the sandboxed sleeps carry a unique fractional-second tag and
     /// the host-wide pgrep matches only that tag.
     #[test]
     fn timeout_kills_tree_and_reports_timed_out() {
@@ -219,7 +304,7 @@ mod tests {
         );
     }
 
-    /// 4. Missing sandbox backend → refusal: non-zero exit (an Err), and
+    /// A missing sandbox backend → refusal: non-zero exit (an Err), and
     /// the command is NOT run.
     #[test]
     fn missing_backend_refuses_without_running() {
