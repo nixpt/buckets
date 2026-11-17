@@ -719,16 +719,35 @@ fn prepare_cgroup(limits: &Limits) -> Result<Option<Arc<CgroupHold>>, SandboxErr
     let prepared = p.prepare().map_err(|e| SandboxError::Limits(e.to_string()))?;
     if limits.memory_bytes.is_some() {
         // memory.max alone lets the workload spill into swap (zandbox leaves
-        // memory.swap.max at "max"), so --memory would not really cap it.
-        if let Some(cg) = prepared.cgroup_path() {
-            let swap = cg.join("memory.swap.max");
-            if swap.exists() {
-                std::fs::write(&swap, "0")
-                    .map_err(|e| SandboxError::Limits(format!("{}: {e}", swap.display())))?;
-            }
+        // memory.swap.max at "max"; nixpt/zandbox#5), so --memory would not
+        // really cap it. Fail closed: if the swap knob is missing (swap
+        // accounting off) while swap is active, refuse rather than run with a
+        // leaky cap. No active swap → nothing to leak, so a missing knob is fine.
+        let cg = prepared.cgroup_path().ok_or_else(|| {
+            SandboxError::Limits("memory limit requested but zandbox created no cgroup".into())
+        })?;
+        let swap = cg.join("memory.swap.max");
+        if swap.exists() {
+            std::fs::write(&swap, "0")
+                .map_err(|e| SandboxError::Limits(format!("{}: {e}", swap.display())))?;
+        } else if swap_active(Path::new("/proc/swaps")) {
+            return Err(SandboxError::Limits(format!(
+                "{} missing (swap accounting off) while swap is active: --memory cannot \
+                 stop the workload spilling into swap",
+                swap.display()
+            )));
         }
     }
     Ok(Some(Arc::new(CgroupHold(prepared))))
+}
+
+/// True when `/proc/swaps` (or a test stand-in) lists at least one swap
+/// device. Unreadable → assume active (fail closed).
+fn swap_active(proc_swaps: &Path) -> bool {
+    match std::fs::read_to_string(proc_swaps) {
+        Ok(s) => s.lines().skip(1).any(|l| !l.trim().is_empty()),
+        Err(_) => true,
+    }
 }
 
 /// Install the `pre_exec` hook: join the cgroup, and make the seccomp memfd
@@ -1128,6 +1147,21 @@ mod tests {
         args.iter().position(|a| a == "--").expect("-- separator present")
     }
 
+
+    #[test]
+    fn swap_active_reads_proc_swaps() {
+        let d = std::env::temp_dir().join(format!("buckets-swaps-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let hdr = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n";
+        let none = d.join("none");
+        std::fs::write(&none, hdr).unwrap();
+        assert!(!swap_active(&none), "header only = no swap");
+        let some = d.join("some");
+        std::fs::write(&some, format!("{hdr}/dev/zram0  partition\t15501308\t0\t100\n")).unwrap();
+        assert!(swap_active(&some));
+        assert!(swap_active(&d.join("missing")), "unreadable must fail closed");
+        let _ = std::fs::remove_dir_all(&d);
+    }
     #[test]
     fn base_dirs_are_ro_bound() {
         let args = bw("echo", &["hi"], "/tmp", &SandboxProfile::default());
