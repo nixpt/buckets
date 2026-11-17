@@ -6,7 +6,7 @@ name = "crush-buckets"
 version = "0.1.0"
 description = "Throwaway runtime buckets for AI agents — resolve, fetch, and run any tool in an isolated environment"
 edition = "2021"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/nixpt/buckets"
 readme = "README.md"
 keywords = ["sandbox", "agent", "runtime", "bwrap", "isolation"]
@@ -15,6 +15,15 @@ categories = ["command-line-utilities", "development-tools"]
 [[bin]]
 name = "buckets"
 path = "src/main.rs"
+
+[features]
+# Opt-in scheduler integration (BUCKETS-16): `buckets build --sched` routes
+# cargo builds through buildsched's admission-controlled pipeline. OFF by
+# default on purpose — buckets' standing posture is "self-contained, no path
+# deps on any peer project" (same opt-in shape as the fleet's
+# okd-core[compute] precedent), and buildsched itself carries an
+# absolute-path dep on zpu that only resolves on fleet boxes.
+buildsched = ["dep:buildsched"]
 
 [dependencies]
 anyhow = "1"
@@ -32,6 +41,11 @@ toml = "0.8"
 fd-lock = "4"
 shlex = "1"
 libc = "0.2"
+# Sandbox hardening (BUCKETS-17): cgroup v2 limits joined in the bwrap
+# process's pre_exec, and the seccomp BPF program handed to bwrap --seccomp.
+zandbox = "0.1.0"
+# Sibling peer repo — only pulled in by the opt-in `buildsched` feature above.
+buildsched = { path = "../buildsched", optional = true }
 
 
 [profile.release]

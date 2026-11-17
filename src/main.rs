@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod cellar;
 mod config;
@@ -16,6 +16,9 @@ mod install;
 mod inventory;
 mod project;
 mod resolve;
+// Library API (sandboxed_command, Sandbox::backend, ...) the CLI itself
+// doesn't call; consumers such as crush-vm do.
+#[allow(dead_code)]
 mod sandbox;
 mod session;
 mod site;
@@ -109,9 +112,14 @@ enum Command {
         #[arg(long)]
         net: Option<String>,
 
-        /// Run unsandboxed (plain subprocess, no bwrap containment).
+        /// Run unsandboxed (plain subprocess, no bwrap containment). The
+        /// environment is still clean unless --inherit-env is given; cgroup
+        /// limits and --timeout still apply; seccomp does not.
         #[arg(long)]
         no_sandbox: bool,
+
+        #[command(flatten)]
+        sandbox: SandboxOpts,
     },
 
     /// Open an interactive shell with the runtime in PATH.
@@ -126,6 +134,9 @@ enum Command {
         /// Run unsandboxed (plain subprocess, no bwrap containment).
         #[arg(long)]
         no_sandbox: bool,
+
+        #[command(flatten)]
+        sandbox: SandboxOpts,
     },
 
     /// Print the composed environment as shell exports or JSON.
@@ -221,6 +232,16 @@ enum Command {
         /// Build/test/run unsandboxed (plain subprocess, no bwrap containment).
         #[arg(long)]
         no_sandbox: bool,
+
+        /// Route the cargo build through buildsched's admission-controlled
+        /// pipeline (memory/PSI/disk gating). Requires buckets compiled with
+        /// the `buildsched` cargo feature; cargo projects with a single
+        /// `[package]` only (others fall back to the normal path). Sched
+        /// builds always run unsandboxed — the pipeline spawns its own
+        /// cargo subprocess tree, which can't live inside the per-command
+        /// bwrap wrap.
+        #[arg(long)]
+        sched: bool,
     },
 
     /// Ephemeral git worktrees — a task gets its own working copy at a
@@ -340,8 +361,7 @@ enum Command {
     ///
     /// Sessions share a writable overlay filesystem across multiple
     /// `session exec` calls — files written by one command survive
-    /// into the next. Backed by disk (default), tmpfs (--tmpfs), or
-    /// zram (--zram).
+    /// into the next. Backed by disk (default) or tmpfs (--tmpfs).
     #[command(subcommand)]
     Session(SessionCommand),
 
@@ -431,6 +451,91 @@ enum HerdSubcommand {
 }
 
 
+/// Sandbox hardening options shared by `run`, `net run` and `shell`
+/// (BUCKETS-17). See the README's "Real process isolation" section.
+#[derive(clap::Args, Debug, Clone, Default)]
+struct SandboxOpts {
+    /// If bwrap is missing, accept proot instead of refusing (mount view
+    /// only: no network/PID/IPC isolation, no seccomp).
+    #[arg(long)]
+    allow_weaker_sandbox: bool,
+
+    /// Pass the host environment through (default: only the composed
+    /// toolchain env + TERM/LANG/LC_*/TZ + HOME + PATH).
+    #[arg(long)]
+    inherit_env: bool,
+
+    /// seccomp filter inside the sandbox: off, default (EPERM on anything
+    /// outside the allowlist) or strict (no sockets; violations kill).
+    #[arg(long, value_name = "MODE", default_value = "default", value_parser = parse_seccomp)]
+    seccomp: sandbox::SeccompMode,
+
+    /// cgroup memory.max for the whole sandbox, e.g. 512M, 2G.
+    #[arg(long, value_name = "SIZE", value_parser = sandbox::parse_size)]
+    memory: Option<u64>,
+
+    /// cgroup pids.max (bwrap itself uses 2).
+    #[arg(long, value_name = "N")]
+    pids: Option<u64>,
+
+    /// cgroup cpu.max as a percentage of one CPU, e.g. 50%, 200%.
+    #[arg(long, value_name = "PERCENT", value_parser = sandbox::parse_cpu_percent)]
+    cpu: Option<u32>,
+
+    /// Wall-clock limit; the whole sandbox is killed when it expires
+    /// (exit status 124). E.g. 30s, 2m, 500ms.
+    #[arg(long, value_name = "DURATION", value_parser = sandbox::parse_duration)]
+    timeout: Option<std::time::Duration>,
+
+    /// Delegated cgroup v2 directory for --memory/--pids/--cpu
+    /// (default: $BUCKETS_CGROUP_PARENT).
+    #[arg(long, value_name = "DIR")]
+    cgroup_parent: Option<PathBuf>,
+}
+
+fn parse_seccomp(s: &str) -> std::result::Result<sandbox::SeccompMode, String> {
+    s.parse()
+}
+
+impl SandboxOpts {
+    /// Apply these options to a base profile.
+    fn apply(&self, mut p: sandbox::SandboxProfile) -> sandbox::SandboxProfile {
+        if self.allow_weaker_sandbox {
+            p.fallback = sandbox::Fallback::Proot;
+        }
+        if self.inherit_env {
+            p.env_policy = sandbox::EnvPolicy::Inherit;
+        }
+        p.seccomp = self.seccomp;
+        p.limits = sandbox::Limits {
+            memory_bytes: self.memory,
+            pids: self.pids,
+            cpu_percent: self.cpu,
+            cgroup_parent: self.cgroup_parent.clone(),
+            timeout: self.timeout,
+        };
+        p
+    }
+}
+
+/// Wait for a sandbox, report a timeout, and exit with the child's status.
+fn finish_sandboxed(sb: sandbox::Sandbox, what: &str) -> Result<()> {
+    let outcome = sb.status().with_context(|| format!("Failed to execute {what}"))?;
+    if outcome.timed_out {
+        eprintln!("▶ timeout reached — sandbox killed");
+        std::process::exit(124);
+    }
+    if !outcome.status.success() {
+        use std::os::unix::process::ExitStatusExt;
+        let code = outcome
+            .status
+            .code()
+            .unwrap_or_else(|| 128 + outcome.status.signal().unwrap_or(1));
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 #[derive(Subcommand)]
 enum NetSubcommand {
     /// Create a named virtual network (persists until 'buckets net rm').
@@ -462,6 +567,8 @@ enum NetSubcommand {
         /// Run unsandboxed.
         #[arg(long)]
         no_sandbox: bool,
+        #[command(flatten)]
+        sandbox: SandboxOpts,
     },
 
     /// Forward a port from the host loopback into the virtual network.
@@ -490,6 +597,11 @@ enum WorktreeCommand {
         /// Base branch/commit to branch from (default: repo's current HEAD).
         #[arg(long)]
         from: Option<String>,
+        /// Create the worktree exactly here (BUCKETS-17). Default: inside the
+        /// repo at `.jagent/worktrees/<branch>` when the repo has `.jagent/`,
+        /// else `$BUCKETS_WORKTREE_DIR/<repo>-<branch>`, else a sibling.
+        #[arg(long)]
+        path: Option<PathBuf>,
     },
 
     /// Remove a worktree, and its branch if it's merged (git's own `git
@@ -600,7 +712,7 @@ fn main() -> Result<()> {
     let index = Index::builtin();
 
     match cli.command {
-        Command::Run { specs, command, no_sandbox, net } => {
+        Command::Run { specs, command, no_sandbox, net, sandbox } => {
             let nets_dir = config.cache_dir.join("nets");
             let net_ns = if let Some(ref name) = net {
                 let session = net::NetSession::load(name, &nets_dir)?;
@@ -608,17 +720,19 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            cmd_run(&specs, &command, no_sandbox, net_ns, &config, &index)
+            cmd_run(&specs, &command, no_sandbox, net_ns, &sandbox, &config, &index)
         }
-        Command::Shell { specs, shell, no_sandbox } => cmd_shell(&specs, shell.as_deref(), no_sandbox, &config, &index),
+        Command::Shell { specs, shell, no_sandbox, sandbox } => {
+            cmd_shell(&specs, shell.as_deref(), no_sandbox, &sandbox, &config, &index)
+        }
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
         Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
         Command::Clean { spec, all, older_than, dry_run } => {
             cmd_clean(&config, spec.as_deref(), all, older_than.as_deref(), dry_run)
         }
-        Command::Build { path_or_url, bucketfile, tag, test, run, no_sandbox } => {
-            cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, &config, &index)
+        Command::Build { path_or_url, bucketfile, tag, test, run, no_sandbox, sched } => {
+            cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, sched, &config, &index)
         }
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
         Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password } => {
@@ -638,6 +752,7 @@ fn cmd_run(
     command: &[String],
     no_sandbox: bool,
     net_ns: Option<String>,
+    opts: &SandboxOpts,
     config: &Config,
     index: &Index,
 ) -> Result<()> {
@@ -696,38 +811,29 @@ fn cmd_run(
         }
     }
 
-    let mut cmd = if no_sandbox {
-        let mut c = std::process::Command::new(program);
-        c.args(args);
-        c
-    } else {
-        let cwd = if let Some(ref meta) = metadata {
-            let base_ws = bucket_workspace_path.clone().unwrap();
-            if let Some(ref wd) = meta.workdir {
-                base_ws.join(wd)
-            } else {
-                base_ws
-            }
+    let cwd = if let Some(ref meta) = metadata {
+        let base_ws = bucket_workspace_path.clone().unwrap();
+        if let Some(ref wd) = meta.workdir {
+            base_ws.join(wd)
         } else {
-            std::env::current_dir()?
-        };
-        let profile = sandbox::SandboxProfile {
-            project_dir: Some(cwd.clone()),
-            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
-            extra_rw_binds: Vec::new(),
-            binds_at_path: Vec::new(),
-            allow_network: false,
-            net_ns: net_ns.clone(),
-        };
-        sandbox::sandboxed_command(program, args, &cwd, &final_env, &profile)
+            base_ws
+        }
+    } else {
+        std::env::current_dir()?
+    };
+    let profile = opts.apply(sandbox::SandboxProfile {
+        project_dir: Some(cwd.clone()),
+        extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+        net_ns: net_ns.clone(),
+        ..Default::default()
+    });
+    let mut sb = if no_sandbox {
+        sandbox::unsandboxed(program, args, None, &final_env, &profile)?
+    } else {
+        sandbox::try_sandboxed_command(program, args, &cwd, &final_env, &profile)?
     };
 
-    if no_sandbox {
-        for (key, value) in &final_env {
-            cmd.env(key, value);
-        }
-    }
-
+    let cmd = sb.command_mut();
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
@@ -738,13 +844,7 @@ fn cmd_run(
     } else {
         eprintln!("▶ running in {bucket_name} bucket");
     }
-    let status = cmd.status().with_context(|| format!("Failed to execute {program}"))?;
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
-
-    Ok(())
+    finish_sandboxed(sb, program)
 }
 
 /// Manage buck-net virtual networks.
@@ -780,12 +880,12 @@ fn cmd_net(cmd: NetSubcommand, config: &Config) -> Result<()> {
             Ok(())
         }
 
-        NetSubcommand::Run { name, specs, command, no_sandbox } => {
+        NetSubcommand::Run { name, specs, command, no_sandbox, sandbox } => {
             let session = net::NetSession::load(&name, &nets_dir)?;
             let net_ns = if no_sandbox { None } else { Some(session.ns_path()) };
             // Re-use cmd_run; we need a fake Index so pull it here
             let index = crate::index::Index::builtin();
-            cmd_run(&specs, &command, no_sandbox, net_ns, config, &index)
+            cmd_run(&specs, &command, no_sandbox, net_ns, &sandbox, config, &index)
         }
 
         NetSubcommand::Expose { name, mapping } => {
@@ -814,7 +914,14 @@ fn parse_port_mapping(s: &str) -> Result<(u16, u16)> {
     Ok((host_port, bucket_port))
 }
 
-fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &Config, index: &Index) -> Result<()> {
+fn cmd_shell(
+    specs: &[String],
+    shell: Option<&str>,
+    no_sandbox: bool,
+    opts: &SandboxOpts,
+    config: &Config,
+    index: &Index,
+) -> Result<()> {
     if specs.is_empty() {
 
         anyhow::bail!("At least one spec is required (e.g. 'node@20')");
@@ -830,42 +937,32 @@ fn cmd_shell(specs: &[String], shell: Option<&str>, no_sandbox: bool, config: &C
     let bucket_name = specs.join("+");
     let bucket_prompt = format!("[{}] ", bucket_name);
 
-    let mut cmd = if no_sandbox {
-        let mut c = std::process::Command::new(&shell_program);
-        for (key, value) in &resolved.env {
-            c.env(key, value);
-        }
-        c
+    let mut env = resolved.env.clone();
+    env.insert("BUCKET_PROMPT".to_string(), bucket_prompt.clone());
+    if shell_program.contains("bash") || shell_program.contains("zsh") {
+        env.insert("PS1".to_string(), format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "));
+    }
+    let cwd = std::env::current_dir()?;
+    let profile = opts.apply(sandbox::SandboxProfile {
+        project_dir: Some(cwd.clone()),
+        extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
+        // Interactive job control needs the caller's terminal session.
+        keep_terminal_session: true,
+        ..Default::default()
+    });
+    let mut sb = if no_sandbox {
+        sandbox::unsandboxed(&shell_program, &[], None, &env, &profile)?
     } else {
-        let cwd = std::env::current_dir()?;
-        let profile = sandbox::SandboxProfile {
-            project_dir: Some(cwd.clone()),
-            extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
-            extra_rw_binds: Vec::new(),
-            binds_at_path: Vec::new(),
-            allow_network: false,
-            net_ns: None,
-        };
-        sandbox::sandboxed_command(&shell_program, &[], &cwd, &resolved.env, &profile)
+        sandbox::try_sandboxed_command(&shell_program, &[], &cwd, &env, &profile)?
     };
 
-    cmd.env("BUCKET_PROMPT", &bucket_prompt);
-    if shell_program.contains("bash") || shell_program.contains("zsh") {
-        cmd.env("PS1", format!("\\[\\e[1;34m\\]{bucket_prompt}\\[\\e[0m\\]\\w \\$ "));
-    }
-
+    let cmd = sb.command_mut();
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
     eprintln!("▶ starting {bucket_name} bucket shell ({})", shell_program);
-    let status = cmd.status()?;
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
-
-    Ok(())
+    finish_sandboxed(sb, &shell_program)
 }
 
 /// Print the composed environment.
@@ -1151,6 +1248,7 @@ fn parse_duration(s: &str) -> Result<std::time::Duration> {
 
 /// Clone/use a source repo, detect its build system, resolve the toolchain
 /// it needs, and run build (+ optionally test, run) sandboxed against it.
+#[allow(clippy::too_many_arguments)]
 fn cmd_build(
     path_or_url: &str,
     bucketfile: Option<&str>,
@@ -1158,9 +1256,21 @@ fn cmd_build(
     test: bool,
     run: bool,
     no_sandbox: bool,
+    sched: bool,
     config: &Config,
     index: &Index,
 ) -> Result<()> {
+    // Fail fast, before any clone/resolve work: without the feature there is
+    // no pipeline to route to, and silently ignoring the flag would lie.
+    #[cfg(not(feature = "buildsched"))]
+    if sched {
+        anyhow::bail!(
+            "--sched requires buckets compiled with the 'buildsched' cargo feature \
+             (off by default — it adds a path dep on the sibling buildsched repo). \
+             Rebuild with: cargo build --features buildsched"
+        );
+    }
+
     let (source_dir, is_temp) = project::resolve_source(path_or_url)?;
 
     // Check if we should build a Bucketfile
@@ -1198,7 +1308,14 @@ fn cmd_build(
         .with_context(|| format!("Failed to resolve toolchain: {}", plan.toolchain_specs.join(", ")))?;
 
     let outcome = (|| -> Result<()> {
-        run_project_step("build", &plan.build_cmd, &plan.source_dir, no_sandbox, &resolved)?;
+        #[cfg(feature = "buildsched")]
+        let sched_handled = sched && sched_build(&plan, no_sandbox, &resolved)?;
+        #[cfg(not(feature = "buildsched"))]
+        let sched_handled = false;
+
+        if !sched_handled {
+            run_project_step("build", &plan.build_cmd, &plan.source_dir, no_sandbox, &resolved)?;
+        }
 
         if test {
             match &plan.test_cmd {
@@ -1254,12 +1371,10 @@ fn run_project_step(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(project_dir.to_path_buf()),
             extra_ro_binds: resolved.installations.iter().map(|i| i.path.clone()).collect(),
-            extra_rw_binds: Vec::new(),
-            binds_at_path: Vec::new(),
             allow_network: true,
-            net_ns: None,
+            ..Default::default()
         };
-        sandbox::sandboxed_command(program, args, project_dir, &resolved.env, &profile)
+        sandbox::try_sandboxed_command(program, args, project_dir, &resolved.env, &profile)?.into_command()
     };
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -1272,6 +1387,102 @@ fn run_project_step(
         anyhow::bail!("{label} failed (exit {})", status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+/// Route the build step through buildsched's admission-controlled pipeline
+/// (BUCKETS-16 / buildsched's BSC-5). Returns `Ok(true)` when the pipeline
+/// handled the build, `Ok(false)` to fall back to the normal
+/// `run_project_step` path (non-cargo project, or a virtual workspace with
+/// no single `[package]` to target).
+///
+/// Sched builds are always unsandboxed: the pipeline spawns its own `cargo`
+/// subprocess tree (metadata + one `cargo build -p` per job), which can't
+/// run inside the existing per-command bwrap wrap. The bucket toolchain
+/// still applies — the same composed env the normal unsandboxed path sets
+/// on its child is injected into every pipeline subprocess via
+/// `with_child_env` (the pipeline's own CARGO_TARGET_DIR/CARGO_BUILD_JOBS
+/// win on a key conflict, per buildsched's documented precedence).
+///
+/// Target dir stays cargo's default (`<source_dir>/target`) on purpose —
+/// tiered/zram target-dir wiring is bob's own business, not buckets'.
+#[cfg(feature = "buildsched")]
+fn sched_build(
+    plan: &project::ProjectPlan,
+    no_sandbox: bool,
+    resolved: &types::ResolvedEnvironment,
+) -> Result<bool> {
+    let manifest_path = plan.source_dir.join("Cargo.toml");
+    if !manifest_path.exists() {
+        eprintln!("⚠ --sched only supports cargo projects — falling back to the normal build path");
+        return Ok(false);
+    }
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let package = match cargo_package_name(&manifest) {
+        Some(name) => name,
+        None => {
+            eprintln!("⚠ virtual workspace — --sched needs a single target package, falling back to cargo build");
+            return Ok(false);
+        }
+    };
+
+    if !no_sandbox {
+        eprintln!("▶ --sched builds run unsandboxed (the pipeline spawns its own cargo subprocess tree, outside bwrap)");
+    }
+
+    let child_env = resolved
+        .env
+        .iter()
+        .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)));
+
+    let cfg = buildsched::pipeline::PipelineConfig::simple(
+        &manifest_path,
+        &package,
+        plan.source_dir.join("target"),
+    )
+    .with_child_env(child_env);
+
+    eprintln!("▶ build (sched): buildsched pipeline, package '{package}'");
+    let outcome = buildsched::pipeline::run(cfg)
+        .with_context(|| format!("buildsched pipeline failed for package '{package}'"))?;
+    eprintln!(
+        "▶ build (sched): {}/{} jobs in {:.1}s",
+        outcome.completed_steps,
+        outcome.total_jobs,
+        outcome.elapsed.as_secs_f64()
+    );
+    Ok(true)
+}
+
+/// Extract `[package] name` from a Cargo.toml's contents. `None` for a
+/// virtual workspace manifest (no `[package]` table) or unparseable input.
+#[cfg(feature = "buildsched")]
+fn cargo_package_name(manifest: &str) -> Option<String> {
+    let doc: toml::Value = toml::from_str(manifest).ok()?;
+    Some(doc.get("package")?.get("name")?.as_str()?.to_string())
+}
+
+#[cfg(all(test, feature = "buildsched"))]
+mod sched_tests {
+    use super::cargo_package_name;
+
+    #[test]
+    fn package_manifest_yields_name() {
+        assert_eq!(
+            cargo_package_name("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"),
+            Some("demo".to_string())
+        );
+    }
+
+    #[test]
+    fn virtual_workspace_yields_none() {
+        assert_eq!(cargo_package_name("[workspace]\nmembers = [\"a\", \"b\"]\n"), None);
+    }
+
+    #[test]
+    fn garbage_yields_none() {
+        assert_eq!(cargo_package_name("not toml {{{"), None);
+    }
 }
 
 /// Run a GUI command against a fresh Xvfb X server, sandboxed via `bwrap`
@@ -1327,12 +1538,14 @@ fn cmd_gui(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
-            extra_rw_binds: Vec::new(),
-            binds_at_path: Vec::new(),
-            allow_network: false,
-            net_ns: None,
+            // X11 MIT-SHM against the outside Xvfb needs the host IPC ns;
+            // GUI toolkits make syscalls the runtime-oriented seccomp
+            // profile doesn't cover.
+            share_ipc: true,
+            seccomp: sandbox::SeccompMode::Off,
+            ..Default::default()
         };
-        sandbox::sandboxed_command(program, args, &cwd, &env, &profile)
+        sandbox::try_sandboxed_command(program, args, &cwd, &env, &profile)?.into_command()
     };
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -1446,13 +1659,17 @@ fn cmd_site(
         let profile = sandbox::SandboxProfile {
             project_dir: Some(target.storage_dir.clone()),
             extra_ro_binds,
-            extra_rw_binds: Vec::new(),
-            binds_at_path: Vec::new(),
             allow_network: !no_network,
-            net_ns: None,
+            // Browsers run their own sandbox (user namespaces + their own
+            // seccomp) and need X11 MIT-SHM.
+            share_ipc: true,
+            allow_nested_userns: true,
+            seccomp: sandbox::SeccompMode::Off,
+            ..Default::default()
         };
         let args_rest = &args[..];
-        sandbox::sandboxed_command(browser_path.to_string_lossy().as_ref(), args_rest, &target.storage_dir, &env, &profile)
+        sandbox::try_sandboxed_command(browser_path.to_string_lossy().as_ref(), args_rest, &target.storage_dir, &env, &profile)?
+            .into_command()
     };
 
     cmd.stdin(std::process::Stdio::inherit());
@@ -1501,44 +1718,6 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).map(|dir| dir.join(bin)).find(|p| p.is_file())
     })
-}
-
-/// Confirm a PID from a stale-able `deploy.pid` is still THIS herd's deploy
-/// process before signalling it. If the deploy died uncleanly the pidfile is
-/// left behind and the PID may have been recycled by the kernel for an
-/// unrelated process — signalling blindly would kill the wrong thing. Reads
-/// /proc/<pid>/cmdline and requires a `buckets herd deploy` signature.
-fn is_herd_deploy_pid(pid: i32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
-        Ok(cmdline) => {
-            // argv is NUL-separated; join to a single string for substring checks.
-            let joined: String = cmdline.split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
-            joined.contains("buckets") && joined.contains("herd") && joined.contains("deploy")
-        }
-        Err(_) => false, // no /proc entry -> the process is gone, pidfile is stale
-    }
-}
-
-/// Read a `deploy.pid` file if present and parseable; `None` otherwise.
-fn read_deploy_pid(pid_path: &std::path::Path) -> Option<i32> {
-    let content = std::fs::read_to_string(pid_path).ok()?;
-    content.trim().parse::<i32>().ok()
-}
-
-/// SIGKILL every replica PID recorded in a herd's state.json, then remove the
-/// herd state dir. Last-resort cleanup when the deploy process didn't tear
-/// itself down within the wait window.
-fn force_remove_herd(herds_dir: &std::path::Path, name: &str, state_path: &std::path::Path) {
-    if let Ok(content) = std::fs::read_to_string(state_path) {
-        if let Ok(state) = serde_json::from_str::<herd::HerdState>(&content) {
-            for inst in &state.instances {
-                if let Some(inst_pid) = inst.pid {
-                    unsafe { libc::kill(inst_pid as libc::pid_t, libc::SIGKILL); }
-                }
-            }
-        }
-    }
-    let _ = std::fs::remove_dir_all(herds_dir.join(name));
 }
 
 /// Manage persistent sessions: start, exec, stop, list.
@@ -1594,8 +1773,14 @@ fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()
 
 fn cmd_worktree(cmd: WorktreeCommand, config: &Config) -> Result<()> {
     match cmd {
-        WorktreeCommand::Create { repo, branch, from } => {
-            let path = worktree::create(Path::new(&repo), &branch, from.as_deref(), config.worktree_dir.as_deref())?;
+        WorktreeCommand::Create { repo, branch, from, path } => {
+            let path = worktree::create_at(
+                Path::new(&repo),
+                &branch,
+                from.as_deref(),
+                config.worktree_dir.as_deref(),
+                path.as_deref(),
+            )?;
             println!("{}", path.display());
             Ok(())
         }
@@ -1654,16 +1839,24 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             let ctrl = herd::HerdController::create(herd_spec, &herds_dir)?;
             let ctrl = std::sync::Arc::new(ctrl);
 
-            // Run the reconciler in a background thread; block main on Ctrl-C
+            // Run the reconciler + IPC control server in background threads;
+            // block main on Ctrl-C or an IPC Stop request.
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let stop2 = stop.clone();
             let ctrl2 = ctrl.clone();
 
-            let handle = std::thread::spawn(move || {
+            let reconciler = std::thread::spawn(move || {
                 ctrl2.run_reconciler(stop2);
             });
 
-            // Wait for a real SIGINT/SIGTERM (not stdin EOF — see HERD_STOP_SIGNAL's doc).
+            let stop_ipc = stop.clone();
+            let ctrl_ipc = ctrl.clone();
+            let ipc = std::thread::spawn(move || {
+                herd::serve_control(ctrl_ipc, stop_ipc);
+            });
+
+            // Wait for a real SIGINT/SIGTERM (not stdin EOF — see HERD_STOP_SIGNAL's doc)
+            // or for `buckets herd stop` via the control socket.
             unsafe {
                 if libc::signal(libc::SIGINT, herd_signal_handler as *const () as usize) == libc::SIG_ERR {
                     eprintln!("  warning: could not install SIGINT handler for herd deploy");
@@ -1672,14 +1865,17 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
                     eprintln!("  warning: could not install SIGTERM handler for herd deploy");
                 }
             }
-            eprintln!("  Herd running. Press Ctrl-C to stop.");
-            while !HERD_STOP_SIGNAL.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("  Herd running. Press Ctrl-C to stop (or: buckets herd stop {name}).");
+            while !HERD_STOP_SIGNAL.load(std::sync::atomic::Ordering::SeqCst)
+                && !stop.load(std::sync::atomic::Ordering::SeqCst)
+            {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
 
             eprintln!("▶ shutting down herd '{name}'...");
-            let _ = handle.join();
+            let _ = reconciler.join();
+            let _ = ipc.join();
 
             // Log live instance status before cleanup
             for inst in ctrl.snapshot() {
@@ -1690,9 +1886,9 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             }
 
             // Stop all replicas and clean up (drains Children, kills PIDs, removes state dir).
-            // The reconciler thread has been joined so only this Arc handle remains.
+            // Both background threads have been joined so only this Arc handle remains.
             let ctrl = std::sync::Arc::try_unwrap(ctrl)
-                .expect("reconciler thread should have released its Arc clone");
+                .expect("background threads should have released their Arc clones");
             ctrl.stop()?;
             Ok(())
         }
@@ -1731,6 +1927,37 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
         }
 
         HerdSubcommand::Status { name } => {
+            // Prefer live IPC snapshot when the deploy process is up; fall back
+            // to persisted state.json (stale but still useful after a crash).
+            if herd::control_sock_path(&herds_dir, &name).exists() {
+                let resp = herd::send_control(&herds_dir, &name, herd::HerdRequest::Status)?;
+                let instances = resp.instances.unwrap_or_default();
+                let replicas = resp.replicas.unwrap_or(0);
+                let running = instances
+                    .iter()
+                    .filter(|i| i.status == herd::InstanceStatus::Running)
+                    .count();
+                println!("Herd:    {}", resp.name.as_deref().unwrap_or(&name));
+                println!("Spec:     {}", resp.bucket.as_deref().unwrap_or("—"));
+                println!("Replicas: {running}/{replicas}");
+                if let Some(ref net) = resp.net {
+                    println!("Network:  {net}");
+                }
+                println!();
+                println!("{:<6} {:<10} {:<12} {}", "IDX", "PID", "STATUS", "RESTARTS");
+                println!("{}", "─".repeat(45));
+                for inst in &instances {
+                    println!(
+                        "{:<6} {:<10} {:<12} {}",
+                        inst.index,
+                        inst.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
+                        format!("{:?}", inst.status).to_lowercase(),
+                        inst.restart_count,
+                    );
+                }
+                return Ok(());
+            }
+
             let state_path = herds_dir.join(&name).join("state.json");
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found — is it running?");
@@ -1766,16 +1993,23 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found");
             }
-            let pid_path = herds_dir.join(&name).join("deploy.pid");
-            if !pid_path.exists() {
-                eprintln!("⚠ No live deploy process found for herd '{name}'.");
-                eprintln!("  Stop and re-deploy with the new --replicas value.");
-                return Ok(());
-            }
-            let desired_path = herds_dir.join(&name).join("desired_replicas");
-            std::fs::write(&desired_path, replicas.to_string())
-                .with_context(|| format!("Failed to write desired_replicas for herd '{name}'"))?;
-            eprintln!("↕ herd '{name}' scaling to {replicas} replicas (reconciler will pick up within one check interval)");
+            let resp = herd::send_control(
+                &herds_dir,
+                &name,
+                herd::HerdRequest::Scale { replicas },
+            )?;
+            let running = resp
+                .instances
+                .as_ref()
+                .map(|is| {
+                    is.iter()
+                        .filter(|i| i.status == herd::InstanceStatus::Running)
+                        .count()
+                })
+                .unwrap_or(0);
+            eprintln!(
+                "✓ herd '{name}' scaled to {replicas} ({running} running)"
+            );
             Ok(())
         }
 
@@ -1784,35 +2018,31 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             if !state_path.exists() {
                 anyhow::bail!("Herd '{name}' not found");
             }
-            let pid_path = herds_dir.join(&name).join("deploy.pid");
-            if let Some(pid) = read_deploy_pid(&pid_path) {
-                // Guard against a stale pidfile: if the deploy died uncleanly,
-                // the kernel may have recycled this PID for an unrelated
-                // process. Only signal when /proc confirms it's still a
-                // `buckets herd deploy`.
-                if is_herd_deploy_pid(pid) {
-                    unsafe { libc::kill(pid, libc::SIGTERM); }
-                    eprintln!("▶ stopping herd '{name}' (signaling deploy PID {pid})");
-                    // Wait for the deploy process to clean up replicas + state dir.
-                    for _ in 0..50 {
-                        if !herds_dir.join(&name).exists() {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+
+            // Prefer IPC so the deploy process tears down cleanly (kills
+            // children it owns + removes state). Fall back to SIGTERM from
+            // state.json if the control socket is gone (orphaned herd).
+            if herd::control_sock_path(&herds_dir, &name).exists() {
+                eprintln!("▶ stopping herd '{name}' via control socket");
+                let _ = herd::send_control(&herds_dir, &name, herd::HerdRequest::Stop)?;
+                // Deploy process owns cleanup; wait briefly for state dir to go.
+                for _ in 0..50 {
+                    if !state_path.exists() {
+                        break;
                     }
-                    if herds_dir.join(&name).exists() {
-                        eprintln!("⚠ herd '{name}' state dir still exists after 5s — force-removing");
-                        force_remove_herd(&herds_dir, &name, &state_path);
-                    }
-                    eprintln!("✓ herd '{name}' stopped");
-                    return Ok(());
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
-                eprintln!("⚠ deploy.pid {pid} is stale (not a buckets herd deploy) — falling back to killing replicas directly");
+                if state_path.exists() {
+                    eprintln!("  note: deploy process is shutting down; state may linger briefly");
+                } else {
+                    eprintln!("✓ herd '{name}' stopped");
+                }
+                return Ok(());
             }
-            // Fallback: no live deploy process — kill replicas directly.
+
             let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
-            eprintln!("▶ stopping herd '{name}' (no live deploy process — killing replicas directly)");
+            eprintln!("▶ stopping herd '{name}' (no control socket — killing from state.json)");
             for inst in &state.instances {
                 if let Some(pid) = inst.pid {
                     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }

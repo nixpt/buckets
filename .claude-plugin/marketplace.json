@@ -1,0 +1,14 @@
+{
+  "name": "buckets",
+  "description": "Throwaway runtime buckets for AI agents — resolve, fetch, and run any CLI tool in an isolated ephemeral environment",
+  "owner": {
+    "name": "nixpt"
+  },
+  "plugins": [
+    {
+      "name": "buckets",
+      "source": ".",
+      "description": "Throwaway runtime buckets for AI agents — resolve, fetch, and run any tool in an isolated environment"
+    }
+  ]
+}

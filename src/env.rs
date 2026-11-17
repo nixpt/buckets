@@ -30,6 +30,8 @@ pub fn compose_env(installations: &[Installation]) -> HashMap<String, String> {
     let mut manpath: Vec<PathBuf> = Vec::new();
     let mut xdg_data_dirs: Vec<PathBuf> = Vec::new();
     let mut pkg_config_path: Vec<PathBuf> = Vec::new();
+    let mut pythonpath: Vec<PathBuf> = Vec::new();
+    let mut node_path: Vec<PathBuf> = Vec::new();
     #[cfg(target_os = "macos")]
     let mut dyld_fallback_path: Vec<PathBuf> = Vec::new();
 
@@ -88,6 +90,22 @@ pub fn compose_env(installations: &[Installation]) -> HashMap<String, String> {
             pkg_config_path.push(lib_pc);
         }
 
+        // Lang-registry installs: pip --target puts modules at the cellar
+        // root; npm --prefix puts them under node_modules/.
+        if inst.pkg.project.starts_with("pypi:") {
+            pythonpath.push(base.clone());
+        }
+        if inst.pkg.project.starts_with("npm:") {
+            let nm = base.join("node_modules");
+            if nm.exists() {
+                node_path.push(nm);
+            }
+            let nm_bin = base.join("node_modules").join(".bin");
+            if nm_bin.exists() {
+                path_entries.push(nm_bin);
+            }
+        }
+
         #[cfg(target_os = "macos")]
         {
             let lib_dir = base.join("lib");
@@ -103,6 +121,8 @@ pub fn compose_env(installations: &[Installation]) -> HashMap<String, String> {
     prepend_path(&mut env, "MANPATH", &dedup_ordered(&manpath));
     prepend_path(&mut env, "XDG_DATA_DIRS", &dedup_ordered(&xdg_data_dirs));
     prepend_path(&mut env, "PKG_CONFIG_PATH", &dedup_ordered(&pkg_config_path));
+    prepend_path(&mut env, "PYTHONPATH", &dedup_ordered(&pythonpath));
+    prepend_path(&mut env, "NODE_PATH", &dedup_ordered(&node_path));
 
     #[cfg(target_os = "macos")]
     prepend_path(&mut env, "DYLD_FALLBACK_LIBRARY_PATH", &dedup_ordered(&dyld_fallback_path));
@@ -253,5 +273,47 @@ mod tests {
         };
         let output = format_shell_exports(&env);
         assert!(output.contains("export PATH=\"/a:/b\""));
+    }
+
+    #[test]
+    fn test_compose_env_pypi_sets_pythonpath() {
+        let dir = tempfile::tempdir().unwrap();
+        let inst = Installation {
+            pkg: Package {
+                project: "pypi:six".into(),
+                version: semver::Version::new(1, 16, 0),
+            },
+            path: dir.path().to_path_buf(),
+        };
+        let env = compose_env(&[inst]);
+        assert_eq!(
+            env.get("PYTHONPATH").map(String::as_str),
+            Some(dir.path().to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_compose_env_npm_sets_node_path_and_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let nm = dir.path().join("node_modules");
+        let bin = nm.join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let inst = Installation {
+            pkg: Package {
+                project: "npm:is-number".into(),
+                version: semver::Version::new(7, 0, 0),
+            },
+            path: dir.path().to_path_buf(),
+        };
+        let env = compose_env(&[inst]);
+        assert_eq!(
+            env.get("NODE_PATH").map(String::as_str),
+            Some(nm.to_str().unwrap())
+        );
+        assert!(
+            env.get("PATH").unwrap().split(':').any(|p| p == bin.to_str().unwrap()),
+            "PATH should include node_modules/.bin, got {:?}",
+            env.get("PATH")
+        );
     }
 }

@@ -22,13 +22,13 @@
 //! - `zram`: upper dir on a zram compressed RAM device. Fast+compact (`--zram`).
 
 use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
 use crate::env;
-use crate::sandbox::{self, SandboxProfile};
+use crate::sandbox::{self, BindMount, SandboxProfile};
 use crate::types::{Installation, ResolvedEnvironment};
 
 // ── Session config ──────────────────────────────────────────────────
@@ -332,6 +332,7 @@ pub fn session_start(
 
         let env = env::compose_env(&resolved.installations);
 
+        let session_mount = mount_pt.to_string_lossy().to_string();
         let extra_ro_binds: Vec<PathBuf> = resolved
             .installations
             .iter()
@@ -341,13 +342,14 @@ pub fn session_start(
         let profile = SandboxProfile {
             project_dir: Some(cwd.clone()),
             extra_ro_binds,
-            extra_rw_binds: Vec::new(),
-            binds_at_path: vec![(mount_pt.clone(), "/session/".to_string())],
-            allow_network: false,
-            net_ns: None,
+            // The overlay mount at /session inside the sandbox. A profile
+            // bind, so it lands before bwrap's `--` (BUCKETS-17: appending
+            // `--bind` to the finished command made it program argv).
+            binds: vec![BindMount::rw(&session_mount, "/session")],
+            ..Default::default()
         };
 
-        let mut child = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);
+        let mut child = sandbox::try_sandboxed_command(program, args, &cwd, &env, &profile)?.into_command();
 
         child.stdin(std::process::Stdio::inherit());
         child.stdout(std::process::Stdio::inherit());
@@ -384,6 +386,26 @@ pub fn session_start(
     );
 
     Ok(session_id)
+}
+
+/// Sandbox profile for `session exec`: the overlay mount read-write at
+/// `/session`, its upper dir read-only at `/session-upper` (direct access to
+/// what the session has changed).
+fn session_exec_profile(
+    cwd: &Path,
+    extra_ro_binds: Vec<PathBuf>,
+    session_mount: &str,
+    overlay_upper: &str,
+) -> SandboxProfile {
+    SandboxProfile {
+        project_dir: Some(cwd.to_path_buf()),
+        extra_ro_binds,
+        binds: vec![
+            BindMount::rw(session_mount, "/session"),
+            BindMount::ro(overlay_upper, "/session-upper"),
+        ],
+        ..Default::default()
+    }
 }
 
 /// Execute a command in an existing session.
@@ -427,6 +449,7 @@ pub fn session_exec(
     let env = env::compose_env(&installations);
 
     let cwd = std::env::current_dir()?;
+    let session_mount = cfg.mount_point.clone();
 
     let extra_ro_binds: Vec<PathBuf> = cfg
         .toolchain_dirs
@@ -434,19 +457,9 @@ pub fn session_exec(
         .map(PathBuf::from)
         .collect();
 
-    let profile = SandboxProfile {
-        project_dir: Some(cwd.clone()),
-        extra_ro_binds,
-        extra_rw_binds: Vec::new(),
-        binds_at_path: vec![
-            (PathBuf::from(&cfg.mount_point), "/session/".to_string()),
-            (PathBuf::from(&cfg.overlay_upper), "/session-upper/".to_string()),
-        ],
-        allow_network: false,
-        net_ns: None,
-    };
+    let profile = session_exec_profile(&cwd, extra_ro_binds, &session_mount, &cfg.overlay_upper);
 
-    let mut cmd = sandbox::sandboxed_command(program, args, &cwd, &env, &profile);
+    let mut cmd = sandbox::try_sandboxed_command(program, args, &cwd, &env, &profile)?.into_command();
 
     // Capture output
     let output = cmd
@@ -528,6 +541,36 @@ pub fn session_stop(session_id: &str, purge: bool, config: &Config) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BUCKETS-17: the overlay binds must precede bwrap's `--` (they used to
+    /// be appended after it and became the program's argv).
+    #[test]
+    fn session_exec_binds_precede_separator() {
+        let profile = session_exec_profile(
+            Path::new("/work"),
+            vec![PathBuf::from("/cache/python/v3.12")],
+            "/run/buckets/s1/merged",
+            "/run/buckets/s1/upper",
+        );
+        let argv = sandbox::build_bwrap_args(
+            "ls",
+            &["/session".to_string()],
+            Path::new("/work"),
+            &profile,
+            &[],
+            &sandbox::BwrapFeatures::all(),
+            None,
+        )
+        .unwrap();
+        let sep = argv.iter().position(|a| a == "--").unwrap();
+        let m = argv.iter().position(|a| a == "/session").unwrap();
+        assert!(m < sep);
+        assert_eq!(&argv[m - 2..m], &["--bind".to_string(), "/run/buckets/s1/merged".to_string()]);
+        let u = argv.iter().position(|a| a == "/session-upper").unwrap();
+        assert!(u < sep);
+        assert_eq!(&argv[u - 2..u], &["--ro-bind".to_string(), "/run/buckets/s1/upper".to_string()]);
+        assert_eq!(&argv[sep + 1..], &["ls".to_string(), "/session".to_string()]);
+    }
 
     #[test]
     fn test_generate_session_id_format() {

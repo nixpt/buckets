@@ -54,18 +54,48 @@ actually work against the real network/filesystem."
 
 ```bash
 cargo build
-cargo test    # 71 tests, all unit-level (no network) — see the live-testing note above
+cargo test    # lib: 134 (+3 cgroup tests ignored without BUCKETS_CGROUP_PARENT); live bwrap tests included — see the live-testing note above
 cargo doc --no-deps    # should produce zero warnings
 ```
 
-`bwrap` (bubblewrap) must be installed for real sandboxing; `buckets`
-still works without it (falls back to unsandboxed exec with a warning).
+`bwrap` (bubblewrap) must be installed: since BUCKETS-17 `buckets` refuses
+to run without it unless the user explicitly passes `--allow-weaker-sandbox`
+(proot) or `--no-sandbox`. The sandbox uses `zandbox` (crates.io) for cgroup
+limits (joined in the bwrap process's `pre_exec`) and for the seccomp BPF
+handed to `bwrap --seccomp`. Live sandbox tests run when bwrap is installed;
+the cgroup ones are `#[ignore]`d unless `BUCKETS_CGROUP_PARENT` names a
+delegated cgroup v2 dir (README "Resource limits" has the systemd recipe).
 `buckets gui` additionally needs `Xvfb`, `xauth`, `mcookie` (util-linux),
 and (only if `--screenshot` is used) ImageMagick's `import` — checked
 lazily, with clear errors, not required for any other subcommand.
 
 No `CARGO_TARGET_DIR` redirection needed — standalone crate, no path-deps
-on any peer project.
+on any peer project **in the default build**. The one exception is the
+opt-in `buildsched` cargo feature (BUCKETS-16): `--features buildsched`
+adds a `../buildsched` path dep so `buckets build --sched` can route cargo
+builds through buildsched's admission-controlled pipeline
+(`buildsched::pipeline::{PipelineConfig, run}`, toolchain env injected via
+`with_child_env`). Same opt-in shape as the fleet's `okd-core[compute]`
+precedent: default `cargo build` pulls zero peer deps (`cargo tree` shows
+no buildsched), and the feature stays off by default also because
+buildsched itself has an absolute-path dep on zpu that only resolves on
+fleet boxes. Without the feature, `--sched` fails fast with a
+rebuild-with-features error; with it, non-cargo projects and virtual
+workspaces fall back to the normal path, and sched builds always run
+unsandboxed (the pipeline spawns its own cargo subprocess tree, outside
+the per-command bwrap wrap).
+
+## Claude Code plugin
+
+`.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` make this
+repo a self-referencing single-plugin marketplace (`source: "."`) — install
+via `/plugin marketplace add nixpt/buckets` then `/plugin install
+buckets@buckets`. Ships one skill, `skills/buckets-usage/SKILL.md`, teaching
+a model when to reach for a bucket instead of a global install/version
+switch. Deliberately does not vendor a compiled `buckets` binary (public
+repo, arch-specific blobs don't belong in git history) — the skill tells
+the model to check `command -v buckets` and fall back to `cargo install
+crush-buckets` / `cargo install --path .` if missing.
 
 ## Task IDs
 

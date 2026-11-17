@@ -88,6 +88,12 @@ pub fn list_remote_versions(config: &Config, project: &str) -> Result<Vec<Versio
     if project.starts_with("cargo:") {
         return list_cargo_versions(project);
     }
+    if project.starts_with("pypi:") {
+        return list_pypi_versions(project);
+    }
+    if project.starts_with("npm:") {
+        return list_npm_versions(project);
+    }
     let url = config.versions_url(project);
     let response = match ureq::get(&url).call() {
         Ok(res) => res,
@@ -187,6 +193,122 @@ fn map_cargo_ureq_error(err: ureq::Error, url: &str, crate_name: &str) -> anyhow
     }
 }
 
+fn list_pypi_versions(project: &str) -> Result<Vec<Version>> {
+    let name = project
+        .strip_prefix("pypi:")
+        .context("Missing pypi: prefix")?;
+    validate_lang_pkg_name(name, "pypi")?;
+    let url = format!("https://pypi.org/pypi/{name}/json");
+
+    let response = match ureq::get(&url)
+        .set("User-Agent", "crush-buckets/0.1.0 (contact@nixpt.dev)")
+        .call()
+    {
+        Ok(res) => res,
+        Err(e) => return Err(map_lang_ureq_error(e, &url, "PyPI", name)),
+    };
+
+    let data: serde_json::Value = serde_json::from_reader(response.into_reader())
+        .with_context(|| format!("Failed to parse PyPI response for {name}"))?;
+
+    let releases = data
+        .get("releases")
+        .and_then(|r| r.as_object())
+        .ok_or_else(|| anyhow::anyhow!("PyPI package '{name}' has no releases object"))?;
+
+    let mut versions = Vec::new();
+    for ver_str in releases.keys() {
+        if let Ok(v) = Version::parse(ver_str) {
+            versions.push(v);
+        }
+    }
+    versions.sort_by(|a, b| b.cmp(a));
+    versions.dedup();
+    Ok(versions)
+}
+
+fn list_npm_versions(project: &str) -> Result<Vec<Version>> {
+    let name = project
+        .strip_prefix("npm:")
+        .context("Missing npm: prefix")?;
+    validate_lang_pkg_name(name, "npm")?;
+    // Unscoped packages only for v1 — `@scope/name` collides with the
+    // `@version` separator in PackageReq::parse.
+    let url = format!("https://registry.npmjs.org/{name}");
+
+    let response = match ureq::get(&url)
+        .set("User-Agent", "crush-buckets/0.1.0 (contact@nixpt.dev)")
+        .call()
+    {
+        Ok(res) => res,
+        Err(e) => return Err(map_lang_ureq_error(e, &url, "npm", name)),
+    };
+
+    let data: serde_json::Value = serde_json::from_reader(response.into_reader())
+        .with_context(|| format!("Failed to parse npm registry response for {name}"))?;
+
+    let versions_obj = data
+        .get("versions")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow::anyhow!("npm package '{name}' has no versions object"))?;
+
+    let mut versions = Vec::new();
+    for ver_str in versions_obj.keys() {
+        if let Ok(v) = Version::parse(ver_str) {
+            versions.push(v);
+        }
+    }
+    versions.sort_by(|a, b| b.cmp(a));
+    versions.dedup();
+    Ok(versions)
+}
+
+fn validate_lang_pkg_name(name: &str, source: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("empty {source} package name");
+    }
+    if name.starts_with('@') || name.contains('/') {
+        anyhow::bail!(
+            "{source} scoped packages (e.g. @scope/name) are not supported yet — \
+             the '@' conflicts with the version separator"
+        );
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        anyhow::bail!("invalid {source} package name {name:?}");
+    }
+    Ok(())
+}
+
+fn map_lang_ureq_error(
+    err: ureq::Error,
+    url: &str,
+    registry: &str,
+    pkg_name: &str,
+) -> anyhow::Error {
+    match err {
+        ureq::Error::Status(404, _) => {
+            anyhow::anyhow!(
+                "{registry} package '{pkg_name}' not found (HTTP 404 at {url})"
+            )
+        }
+        ureq::Error::Status(code, _) => {
+            anyhow::anyhow!(
+                "Failed to fetch {registry} package '{pkg_name}' (HTTP {code} at {url})"
+            )
+        }
+        ureq::Error::Transport(transport) => {
+            anyhow::anyhow!(
+                "Network connection failed while fetching {registry} package '{pkg_name}' \
+                 (Error: {:?})\nPlease check your internet connection.",
+                transport.kind()
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +365,41 @@ mod tests {
         assert!(!versions.is_empty());
         let has_v0_1_0 = versions.iter().any(|v| v.major == 0 && v.minor == 1);
         assert!(has_v0_1_0);
+    }
+
+    #[test]
+    fn test_list_pypi_versions() {
+        let config = Config::default();
+        let versions = list_remote_versions(&config, "pypi:six").unwrap();
+        assert!(!versions.is_empty());
+        assert!(versions.iter().any(|v| v.major == 1));
+    }
+
+    #[test]
+    fn test_list_npm_versions() {
+        let config = Config::default();
+        let versions = list_remote_versions(&config, "npm:is-number").unwrap();
+        assert!(!versions.is_empty());
+        assert!(versions.iter().any(|v| v.major == 7));
+    }
+
+    #[test]
+    fn test_pypi_missing_package_404() {
+        let err = list_remote_versions(&Config::default(), "pypi:this-package-does-not-exist-xyz123zzz")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_npm_rejects_scoped() {
+        let err = list_remote_versions(&Config::default(), "npm:@types/node").unwrap_err();
+        assert!(
+            err.to_string().contains("scoped"),
+            "got: {err}"
+        );
     }
 
     #[test]

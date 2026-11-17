@@ -91,3 +91,33 @@ Artifacts: src/net.rs,src/main.rs,src/bucketfile.rs
 Outcome:
 All 3 verified via real buckets build/run (not just unit tests): buck-net create/rm succeed with no permission error, quoted ENTRYPOINT prints real output, COPY from a different cwd now resolves correctly. 93/93 tests pass. Committed as 4 separate fix commits + 1 docs commit + 1 unrelated pre-existing validate_android.sh commit, pushed to agent/cece-buckets/BUCKETS-9-10-continue @ 89b6bc0.
 
+
+## 2026-07-25T02:41:36-05:00 — [TACTICAL] [ADOPTED] [ARCHITECTURAL] Herd live hot-scale via Unix control socket (BUCKETS-14)
+
+Reason:
+BUCKETS-12 deferred live hot-scale because scale/status/stop are separate CLI processes from deploy. A Unix domain socket at herds/{name}/control.sock with line-delimited JSON (Scale/Status/Stop) lets those commands reach the live HerdController without a supervisor daemon. Stop via IPC sets the shared stop flag so deploy tears down via the existing Arc/stop path — fixing the old stop path that SIGTERMed replicas from state.json while leaving the reconciler free to respawn them.
+
+Artifacts: src/herd.rs,src/main.rs
+
+Rejected alternatives:
+- **accept scale as permanently dead / state.json-only scale (can't spawn Child handles cross-process)**
+- **full supervisor daemon with systemd (out of scope; herds stay session-scoped)**
+
+Outcome:
+serve_control + send_control shipped; live smoke verified scale 1→2 and IPC stop; scale no longer allow(dead_code)
+## 2026-08-03T17:24:22-05:00 — BUCKETS-16: --sched via opt-in buildsched cargo feature (default OFF)
+
+Reason:
+okd-core[compute] shape keeps the default build peer-dep-free (cargo tree: 0 buildsched; buildsched carries an absolute-path zpu dep that only resolves on fleet boxes). Sched builds always unsandboxed — the pipeline spawns its own cargo subprocess tree, outside the per-command bwrap wrap. Toolchain env routed via PipelineConfig::with_child_env (pipeline's CARGO_TARGET_DIR/CARGO_BUILD_JOBS win on conflict, BSC-12 precedence); virtual workspaces / non-cargo projects fall back to plain cargo build with one honest line.
+
+
+
+## 2026-11-17T01:20:00-06:00 — BUCKETS-5: merge master 854f3f9 into PR #5; F1/F4 dropped as superseded by BUCKETS-17/BUCKETS-14
+
+Reason:
+PR #5 (4 high-priority fixes) predated master's BUCKETS-17 (fail-closed bwrap+zandbox sandbox rewrite) and BUCKETS-14 (herd Unix-socket IPC). Merge rule: master's sandbox behaviour wins, no second mechanism for the same job. Resolution: F1 (session overlay bind before bwrap `--`) already fixed on master via SandboxProfile.binds/BindMount + session_exec_profile — PR's binds_at_path dropped entirely, superseded by custom_binds_come_before_separator / session_exec_binds_precede_separator / proot_custom_binds_use_dest. F4 (herd stop/scale reaching the deploy process) already covered by master's control-socket IPC — PR's deploy.pid + desired_replicas polling dropped (no two mechanisms). F2 (gui --web no-op) and F3 (session --zram no-op; upper_is_zram kept as documented back-compat, always false) re-fit onto master's code. BUCKETS-16 --flare zram cache flag untouched.
+
+Artifacts: src/main.rs,src/session.rs,src/sandbox.rs,src/herd.rs,src/bucketfile.rs,README.md
+
+Outcome:
+137-test set byte-identical to master's; 133 pass, 1 env-failure (sandbox::live::timeout_kills_whole_tree — false-positive straggler pgrep match on ANOTHER session's `gh pr checks` poll loop's `sleep 60`; fails identically on pristine origin/master in a fresh worktree). cargo fmt --check fails with the identical 573 hunks/18 files on master and this tree (repo predates rustfmt 1.11's import grouping; no CI fmt gate) — no new deviations introduced.
