@@ -1711,17 +1711,30 @@ mod live {
         if !have_bwrap() {
             return;
         }
+        // Tag the sandboxed sleeps with a unique fractional-second argument
+        // (GNU sleep parses "60.<nanos>"). The straggler check then matches
+        // only the sleeps THIS test spawned: the old host-wide `^sleep 6[01]$`
+        // also matched any unrelated `sleep 60`/`sleep 61` on a shared box and
+        // failed the test even though the sandbox had killed its own tree
+        // (#11).
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let script = format!("sleep 60.{tag} & sleep 61.{tag}; wait");
         let profile = SandboxProfile {
             limits: Limits { timeout: Some(Duration::from_secs(2)), ..Default::default() },
             ..Default::default()
         };
         let t0 = Instant::now();
-        let (o, _, _) = sh("sleep 60 & sleep 61; wait", &profile, &HashMap::new());
+        let (o, _, _) = sh(&script, &profile, &HashMap::new());
         let took = t0.elapsed();
         assert!(o.timed_out);
         assert!(took < Duration::from_secs(10), "{took:?}");
-        // No `sleep 60`/`sleep 61` left behind on the host.
-        let left = Command::new("pgrep").args(["-f", "^sleep 6[01]$"]).output().unwrap();
+        // No `sleep 60.<tag>`/`sleep 61.<tag>` left behind on the host —
+        // scoped to this test's own tag, not to every `sleep 6x` on the box.
+        let pat = format!(r"^sleep 6[01]\.{tag}$");
+        let left = Command::new("pgrep").args(["-f", &pat]).output().unwrap();
         assert!(left.stdout.is_empty(), "stragglers: {}", String::from_utf8_lossy(&left.stdout));
     }
 
