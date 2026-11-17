@@ -2,6 +2,10 @@
 
 Snapshot: 2026-08-26 · 19 source files, ~7,400 LOC · 95 tests · pkgx-derived lineage (exo-hydra → buckets)
 
+> **Status 2026-11-17** — after the master merge (BUCKETS-17 sandbox hardening,
+> BUCKETS-14 herd IPC) and PR #5, items **1–4 below are resolved**; each is
+> marked in place. All other items are as written in the 2026-08 snapshot.
+
 ## Module maturity map
 
 | Module | LOC | Maturity | Notes |
@@ -19,14 +23,16 @@ Snapshot: 2026-08-26 · 19 source files, ~7,400 LOC · 95 tests · pkgx-derived 
 | `site.rs` | 133 | **solid, thin** | just resolves storage dir; enforcement is delegated to sandbox |
 | `worktree.rs` | 236 | **mature** | real git wrapper; sibling-default; 6 tests incl. regression |
 | `net.rs` | 320 | **solid** | real unshare/netns + socat expose; no NAT |
-| `session.rs` | 597 | **real but buggy** | genuine OverlayFS; /session/ bind is broken; --zram is a no-op |
-| `herd.rs` | 551 | **real, partly unwired** | real reconciler; scale() dead code; stop/scale can't reach running deploy |
+| `session.rs` | 597 | **real but buggy** | genuine OverlayFS; /session/ bind is broken; --zram is a no-op — ✅ fixed 2026-11-17 (items 1, 3) |
+| `herd.rs` | 551 | **real, partly unwired** | real reconciler; scale() dead code; stop/scale can't reach running deploy — ✅ fixed 2026-11-17 (item 4) |
 | `bucketfile.rs` | 284 | **functional, limited** | FROM/ENV/COPY/RUN/WORKDIR/ENTRYPOINT; no multi-stage/globs |
-| `main.rs` | 1760 | **mature CLI** | 10 subcommands; one ignored flag (gui --web) |
+| `main.rs` | 1760 | **mature CLI** | 10 subcommands; one ignored flag (gui --web) — ✅ removed 2026-11-17 (item 2) |
 
 ## High — correctness (claimed feature doesn't work)
 
 ### 1. session.rs `/session/` bwrap bind is broken
+
+> ✅ **Fixed 2026-11-17** — on master by BUCKETS-17: `SandboxProfile.binds` (`BindMount`) emitted before bwrap's `--` separator; test `session_exec_binds_precede_separator`.
 
 `session_start` (line ~347) and `session_exec` (line ~451) call `sandboxed_command(...)`
 and *then* append `.arg("--bind").arg(&mount).arg("/session/")`. But
@@ -42,17 +48,23 @@ work under bwrap. Fix: pass the session mount through
 
 ### 2. `gui --web` is a no-op
 
+> ✅ **Fixed 2026-11-17** — removed in this PR (BUCKETS-5); the flag no longer exists.
+
 `cmd_gui(..., _web: bool, ...)` in main.rs — the flag is accepted and
 immediately discarded. Either implement the noVNC web-UI serving (the VNC
 server part already works) or remove the flag.
 
 ### 3. `session --zram` is a silent no-op
 
+> ✅ **Fixed 2026-11-17** — removed in this PR (BUCKETS-5); `upper_is_zram` kept as config back-compat (always `false`).
+
 `session_start` only does `if use_tmpfs { tmpfs_mount(...) }`;
 `use_zram` is recorded in `SessionConfig.upper_is_zram` but no zram device
 is ever provisioned. The flag lies.
 
 ### 4. herd stop/scale can't reach a running deploy (BUCKETS-12)
+
+> ✅ **Fixed 2026-11-17** — on master by BUCKETS-14: Unix control socket, `send_control` (Stop/Scale/Status) reaches the live deploy process.
 
 `HerdController::scale()` is `#[allow(dead_code)]` and unreachable from the
 `buckets herd scale` CLI — it just prints "requires the controlling process."

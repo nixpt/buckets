@@ -19,7 +19,6 @@
 //! - `disk` (default): upper dir lives on the host filesystem at
 //!   `~/.buckets/sessions/<id>/upper/`. Survives reboots.
 //! - `tmpfs`: upper dir is a tmpfs mount. Fast, ephemeral (`--tmpfs`).
-//! - `zram`: upper dir on a zram compressed RAM device. Fast+compact (`--zram`).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
