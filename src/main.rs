@@ -2043,13 +2043,7 @@ fn cmd_herd(cmd: HerdSubcommand, config: &Config) -> Result<()> {
             let state: herd::HerdState =
                 serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
             eprintln!("▶ stopping herd '{name}' (no control socket — killing from state.json)");
-            for inst in &state.instances {
-                if let Some(pid) = inst.pid {
-                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
-                    eprintln!("  ✓ replica {} (PID {pid}) terminated", inst.index);
-                }
-            }
-            std::fs::remove_dir_all(herds_dir.join(&name))?;
+            herd::orphan_stop_from_state(&herds_dir, &name, &state)?;
             eprintln!("✓ herd '{name}' stopped");
             Ok(())
         }
