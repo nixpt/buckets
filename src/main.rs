@@ -297,10 +297,6 @@ enum Command {
         /// VNC password (default: no password).
         #[arg(long)]
         vnc_password: Option<String>,
-
-        /// Serve a noVNC web UI alongside the VNC server.
-        #[arg(long)]
-        web: bool,
     },
 
     /// Run a browser against a URL with a real, OS-enforced per-origin
@@ -365,8 +361,7 @@ enum Command {
     ///
     /// Sessions share a writable overlay filesystem across multiple
     /// `session exec` calls — files written by one command survive
-    /// into the next. Backed by disk (default), tmpfs (--tmpfs), or
-    /// zram (--zram).
+    /// into the next. Backed by disk (default) or tmpfs (--tmpfs).
     #[command(subcommand)]
     Session(SessionCommand),
 
@@ -653,11 +648,7 @@ enum SessionCommand {
         #[arg(long)]
         tmpfs: bool,
 
-        /// Use zram for the overlay upper dir (compressed RAM)
-        #[arg(long)]
-        zram: bool,
-
-        /// Size for tmpfs/zram backing (e.g. "2G", "512M"). Default: "4G"
+        /// Size for tmpfs backing (e.g. "2G", "512M"). Default: "4G"
         #[arg(long)]
         size: Option<String>,
     },
@@ -744,8 +735,8 @@ fn main() -> Result<()> {
             cmd_build(&path_or_url, bucketfile.as_deref(), tag.as_deref(), test, run, no_sandbox, sched, &config, &index)
         }
         Command::Worktree(cmd) => cmd_worktree(cmd, &config),
-        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password, web } => {
-            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, vnc_port, vnc_password.as_deref(), web, &config, &index)
+        Command::Gui { specs, command, screenshot, timeout, width, height, no_sandbox, vnc_port, vnc_password } => {
+            cmd_gui(&specs, &command, screenshot.as_deref(), timeout, width, height, no_sandbox, vnc_port, vnc_password.as_deref(), &config, &index)
         }
         Command::Site { url, browser_bin, extra_args, gui, incognito, width, height, screenshot, timeout, no_network, no_sandbox } => {
             cmd_site(&url, browser_bin.as_deref(), &extra_args, gui, incognito, width, height, screenshot.as_deref(), timeout, no_network, no_sandbox, &config)
@@ -1508,7 +1499,6 @@ fn cmd_gui(
     no_sandbox: bool,
     vnc_port: Option<u16>,
     vnc_password: Option<&str>,
-    _web: bool,
     config: &Config,
     index: &Index,
 ) -> Result<()> {
@@ -1733,12 +1723,12 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 /// Manage persistent sessions: start, exec, stop, list.
 fn cmd_session(cmd: SessionCommand, config: &Config, index: &Index) -> Result<()> {
     match cmd {
-        SessionCommand::Start { specs, command, tmpfs, zram, size } => {
+        SessionCommand::Start { specs, command, tmpfs, size } => {
             if specs.is_empty() {
                 anyhow::bail!("At least one spec is required (e.g. 'node@20')");
             }
             let session_id = session::session_start(
-                &specs, &command, tmpfs, zram, size.as_deref(), config, index
+                &specs, &command, tmpfs, size.as_deref(), config, index
             )?;
             println!("{session_id}");
             Ok(())

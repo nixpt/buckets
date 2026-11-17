@@ -377,7 +377,7 @@ itself (a separate, one-time `cargo build`, not part of this command).
 | `worktree list <repo>` | List existing worktrees |
 | `gui [specs] -- <cmd> [--screenshot <path>] [--timeout <secs>] [--width <N>] [--height <N>]` | Run a GUI command in a sandboxed bucket against a fresh Xvfb X server |
 | `site <url> [--browser-bin <path>] [--gui] [--incognito] [--screenshot <path>] [--timeout <secs>]` | Open a URL with a real per-origin storage sandbox |
-| `session start <specs> [--tmpfs\|--zram] [--size <N>] [-- <cmd>]` | Start a persistent OverlayFS session (files survive across `exec` calls) |
+| `session start <specs> [--tmpfs] [--size <N>] [-- <cmd>]` | Start a persistent OverlayFS session (files survive across `exec` calls) |
 | `session exec <session-id> -- <cmd>` | Run a command inside an existing session |
 | `session stop <session-id> [--purge]` | Stop a session (`--purge` also removes its overlay state) |
 | `session list [--json]` | List active sessions |

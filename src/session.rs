@@ -19,7 +19,6 @@
 //! - `disk` (default): upper dir lives on the host filesystem at
 //!   `~/.buckets/sessions/<id>/upper/`. Survives reboots.
 //! - `tmpfs`: upper dir is a tmpfs mount. Fast, ephemeral (`--tmpfs`).
-//! - `zram`: upper dir on a zram compressed RAM device. Fast+compact (`--zram`).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -43,6 +42,10 @@ pub struct SessionConfig {
     pub overlay_upper: String,
     pub overlay_work: String,
     pub upper_is_tmpfs: bool,
+    /// Kept for config back-compat with SessionConfig files written before the
+    /// `--zram` flag was removed (it was a no-op — never provisioned a zram
+    /// device). Always written `false` now; never read for behavior, only for
+    /// display in `session list`.
     pub upper_is_zram: bool,
     pub specs: Vec<String>,
     pub toolchain_dirs: Vec<String>,
@@ -252,7 +255,6 @@ pub fn session_start(
     specs: &[String],
     command: &[String],
     use_tmpfs: bool,
-    use_zram: bool,
     size: Option<&str>,
     config: &Config,
     index: &crate::index::Index,
@@ -316,7 +318,7 @@ pub fn session_start(
         overlay_upper: upper_str.to_string(),
         overlay_work: work_str.to_string(),
         upper_is_tmpfs: use_tmpfs,
-        upper_is_zram: use_zram,
+        upper_is_zram: false,
         specs: specs.to_vec(),
         toolchain_dirs,
         pid: None,
@@ -371,9 +373,7 @@ pub fn session_start(
     // Save session config
     save_session(config, &cfg)?;
 
-    let backing_desc = if use_zram {
-        "zram".to_string()
-    } else if use_tmpfs {
+    let backing_desc = if use_tmpfs {
         format!("tmpfs({})", size.unwrap_or("4G"))
     } else {
         "disk".to_string()
