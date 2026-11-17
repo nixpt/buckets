@@ -23,6 +23,7 @@
 pub mod cellar;
 pub mod config;
 pub mod env;
+pub mod eval;
 pub mod gui;
 pub mod index;
 pub mod install;
