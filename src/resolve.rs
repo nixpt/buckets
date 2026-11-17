@@ -292,9 +292,31 @@ mod tests {
     #[test]
     fn no_companions_is_just_the_spec_itself() {
         let index = Index::builtin();
-        let reqs = collect_transitive_reqs(&["python".to_string()], &index).unwrap();
+        // "deno" — a project with an empty companions table (python.org
+        // gained an openssl companion in BUCKETS-8, so it no longer
+        // illustrates the no-companion case).
+        let reqs = collect_transitive_reqs(&["deno".to_string()], &index).unwrap();
         assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].project, "python.org");
+        assert_eq!(reqs[0].project, "deno.land");
+    }
+
+    /// BUCKETS-8: the python.org bottle's `_ssl`/`_hashlib` extension
+    /// modules dynamically link OpenSSL 1.1 (verified via `ldd` against a
+    /// real v3.15.0 bottle — libssl.so.1.1/libcrypto.so.1.1 "not found"
+    /// without it; the same gap node hit). A python-only bucket must pull
+    /// `openssl.org@^1.1` as a companion, or `import ssl` dies with
+    /// `ImportError: libssl.so.1.1`.
+    #[test]
+    fn python_only_bucket_pulls_openssl_companion() {
+        let index = Index::builtin();
+        let reqs = collect_transitive_reqs(&["python@3.11".to_string()], &index).unwrap();
+        let openssl = reqs
+            .iter()
+            .find(|r| r.project == "openssl.org")
+            .expect("python.org must resolve openssl.org as a companion");
+        // Pinned ^1.1, not bare latest: openssl 3.x ships .so.3, not .so.1.1
+        // (same reasoning as the nodejs.org companion).
+        assert_eq!(openssl.constraint.to_string(), "^1.1");
     }
 
     #[test]

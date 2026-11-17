@@ -41,7 +41,21 @@ impl Index {
 
         aliases.insert("python",  "python.org");
         provides.insert("python.org", vec!["python3", "python", "pip3", "pip", "venv"]);
-        companions.insert("python.org", vec![]);
+        // python's _ssl/_hashlib extension modules dynamically link openssl
+        // 1.1 (verified via `ldd` against a real v3.15.0 bottle —
+        // libssl.so.1.1/libcrypto.so.1.1 both "not found" without it, so
+        // `import ssl` dies with ImportError; the same gap node hit, see
+        // the nodejs.org companions comment above). Pinned, not bare
+        // "openssl" latest — 3.x openssl ships .so.3, not .so.1.1, so an
+        // unpinned companion would still leave python broken.
+        //
+        // Also missing from the bottle but deliberately NOT companions
+        // here (each needs its own bottle verified — BUCKETS-8 ldd sweep):
+        // libtinfow.so.6 (_curses/_curses_panel, ncurses), libmpdec.so.3
+        // (_decimal, mpdecimal), libtk8.6.so (_tkinter, tk). `import ssl`
+        // and pip/HTTPS are the blocker; curses/tkinter stay broken until
+        // those bottles are verified.
+        companions.insert("python.org", vec!["openssl@^1.1"]);
 
         // rust-lang.org's bottle ships rustc/rustfmt/clippy/rust-analyzer/
         // rustdoc — but NOT cargo (or rustup). Verified live: `bin/` has no
@@ -438,6 +452,17 @@ mod tests {
         let comps = idx.companions("git-scm.com");
         assert!(comps.contains(&"openssl"));
         assert!(comps.contains(&"curl"));
+    }
+
+    /// BUCKETS-8: python.org's bottle links OpenSSL 1.1 from its _ssl and
+    /// _hashlib extension modules — pinned ^1.1, like nodejs.org's, because
+    /// openssl 3.x ships .so.3 which _ssl cannot load. The table is keyed
+    /// by project name; alias resolution happens in collect_transitive_reqs
+    /// (covered by resolve::tests::python_only_bucket_pulls_openssl_companion).
+    #[test]
+    fn test_companions_python() {
+        let idx = Index::builtin();
+        assert_eq!(idx.companions("python.org"), &["openssl@^1.1"]);
     }
 
     #[test]
