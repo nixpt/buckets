@@ -90,6 +90,13 @@ pub enum RestartPolicy {
 pub struct InstanceState {
     pub index: u32,
     pub pid: Option<u32>,
+    /// `/proc/<pid>/stat` field 22 (start time, clock ticks since boot),
+    /// recorded when the replica was spawned. `None` when unknown: a
+    /// `state.json` written by an older buckets, or an unreadable stat.
+    /// Verified before the pid is signalled — pids are recycled, and a
+    /// recycled pid may belong to an unrelated process (BUCKETS-10).
+    #[serde(default)]
+    pub pid_starttime: Option<u64>,
     pub status: InstanceStatus,
     pub restart_count: u32,
     pub last_exit_code: Option<i32>,
@@ -139,6 +146,8 @@ impl std::fmt::Debug for InternalState {
 
 struct ChildEntry {
     child: Child,
+    /// Start time recorded at spawn, to persist with the pid (BUCKETS-10).
+    pid_starttime: Option<u64>,
     restart_count: u32,
     last_backoff: Duration,
     status: InstanceStatus,
@@ -148,6 +157,20 @@ struct ChildEntry {
 impl ChildEntry {
     fn pid(&self) -> Option<u32> {
         Some(self.child.id())
+    }
+}
+
+/// A freshly spawned replica's bookkeeping entry, with its start time
+/// captured from /proc before anything can observe the pid on its own.
+fn child_entry(child: Child) -> ChildEntry {
+    let pid_starttime = proc_starttime(child.id());
+    ChildEntry {
+        child,
+        pid_starttime,
+        restart_count: 0,
+        last_backoff: Duration::from_secs(1),
+        status: InstanceStatus::Running,
+        failed_at: None,
     }
 }
 
@@ -188,13 +211,7 @@ impl HerdController {
             for idx in 0..spec.replicas {
                 match spawn_replica(&s.spec, idx) {
                     Ok(child) => {
-                        s.children.insert(idx, ChildEntry {
-                            child,
-                            restart_count: 0,
-                            last_backoff: Duration::from_secs(1),
-                            status: InstanceStatus::Running,
-                            failed_at: None,
-                        });
+                        s.children.insert(idx, child_entry(child));
                         eprintln!(
                             "  ✓ replica {}/{} started",
                             idx + 1,
@@ -240,6 +257,7 @@ impl HerdController {
                     InstanceState {
                         index: idx,
                         pid: entry.pid(),
+                        pid_starttime: entry.pid_starttime,
                         status,
                         restart_count: entry.restart_count,
                         last_exit_code: None,
@@ -248,6 +266,7 @@ impl HerdController {
                     InstanceState {
                         index: idx,
                         pid: None,
+                        pid_starttime: None,
                         status: InstanceStatus::Stopped,
                         restart_count: 0,
                         last_exit_code: None,
@@ -300,13 +319,7 @@ impl HerdController {
                     if policy != RestartPolicy::Never {
                         match spawn_replica(&s.spec, idx) {
                             Ok(child) => {
-                                s.children.insert(idx, ChildEntry {
-                                    child,
-                                    restart_count: 0,
-                                    last_backoff: Duration::from_secs(1),
-                                    status: InstanceStatus::Running,
-                                    failed_at: None,
-                                });
+                                s.children.insert(idx, child_entry(child));
                                 eprintln!("  ↺ herd '{herd_name}' replica {idx}: spawned");
                             }
                             Err(e) => eprintln!("  ✗ herd '{herd_name}' replica {idx}: spawn failed: {e}"),
@@ -360,6 +373,7 @@ impl HerdController {
                         Ok(child) => {
                             if let Some(e) = s.children.get_mut(&idx) {
                                 e.child = child;
+                                e.pid_starttime = proc_starttime(e.child.id());
                                 e.status = InstanceStatus::Running;
                             }
                         }
@@ -388,13 +402,7 @@ impl HerdController {
             for idx in current..new_replicas {
                 match spawn_replica(&s.spec, idx) {
                     Ok(child) => {
-                        s.children.insert(idx, ChildEntry {
-                            child,
-                            restart_count: 0,
-                            last_backoff: Duration::from_secs(1),
-                            status: InstanceStatus::Running,
-                            failed_at: None,
-                        });
+                        s.children.insert(idx, child_entry(child));
                         eprintln!("  ✓ scale up: replica {idx} started");
                     }
                     Err(e) => eprintln!("  ✗ scale up: replica {idx} failed: {e}"),
@@ -440,11 +448,12 @@ impl HerdController {
                 s.children.get(&idx).map(|e| InstanceState {
                     index: idx,
                     pid: e.pid(),
+                    pid_starttime: e.pid_starttime,
                     status: e.status,
                     restart_count: e.restart_count,
                     last_exit_code: None,
                 }).unwrap_or(InstanceState {
-                    index: idx, pid: None,
+                    index: idx, pid: None, pid_starttime: None,
                     status: InstanceStatus::Stopped,
                     restart_count: 0, last_exit_code: None,
                 })
@@ -668,7 +677,7 @@ pub fn send_control(herds_dir: &Path, name: &str, req: HerdRequest) -> Result<He
     Ok(resp)
 }
 
-// ── Spawn helper ──────────────────────────────────────────────────────────────
+// ── Orphan fallback (BUCKETS-10) ─────────────────────────────────────────────
 
 /// `/proc/<pid>/stat` field 22: the process's start time, in clock ticks
 /// since boot. Kernel-maintained and monotonic per boot — a recycled pid
@@ -682,14 +691,62 @@ pub fn proc_starttime(pid: u32) -> Option<u64> {
     after_comm.split_whitespace().nth(22 - 3)?.parse().ok()
 }
 
+/// Whether a pid recorded in state.json still refers to the process it
+/// referred to when the record was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PidCheck {
+    /// Live, and its start time matches the recorded one — safe to signal.
+    Verified,
+    /// No /proc entry — the process is gone; nothing to signal.
+    Gone,
+    /// Live, but its start time differs — the pid was recycled; signalling
+    /// would hit an unrelated process.
+    Mismatch,
+    /// No start time was recorded (state.json written by an older buckets,
+    /// or the start time could not be captured at spawn) — never signal.
+    NoRecord,
+}
+
+/// Compare a recorded pid against the live process by matching
+/// `/proc/<pid>/stat` field 22 (start time) with the recorded value.
+pub fn check_recorded_pid(pid: u32, recorded_starttime: Option<u64>) -> PidCheck {
+    match (proc_starttime(pid), recorded_starttime) {
+        (None, _) => PidCheck::Gone,
+        (Some(_), None) => PidCheck::NoRecord,
+        (Some(live), Some(recorded)) if live == recorded => PidCheck::Verified,
+        (Some(_), Some(_)) => PidCheck::Mismatch,
+    }
+}
+
 /// Kill a herd's replicas straight from its persisted state, without the
 /// control socket (the deploy process is gone). Called by `herd stop`'s
 /// orphan fallback.
+///
+/// Each recorded pid is verified first (start time recorded at spawn,
+/// see [`check_recorded_pid`]): a recycled pid may now belong to an
+/// unrelated process owned by the same user, and is left alone.
 pub fn orphan_stop_from_state(herds_dir: &Path, name: &str, state: &HerdState) -> Result<()> {
     for inst in &state.instances {
-        if let Some(pid) = inst.pid {
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
-            eprintln!("  ✓ replica {} (PID {pid}) terminated", inst.index);
+        let Some(pid) = inst.pid else { continue };
+        let idx = inst.index;
+        match check_recorded_pid(pid, inst.pid_starttime) {
+            PidCheck::Verified => {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+                eprintln!("  ✓ replica {idx} (PID {pid}) terminated");
+            }
+            PidCheck::Gone => {
+                eprintln!("  · replica {idx} (PID {pid}) already gone");
+            }
+            PidCheck::Mismatch => {
+                eprintln!(
+                    "  ⚠ replica {idx}: PID {pid} was recycled (start time mismatch) — NOT signalling"
+                );
+            }
+            PidCheck::NoRecord => {
+                eprintln!(
+                    "  ⚠ replica {idx}: PID {pid} has no recorded start time (state.json predates pid verification) — NOT signalling"
+                );
+            }
         }
     }
     fs::remove_dir_all(herds_dir.join(name))?;
@@ -909,6 +966,7 @@ mod tests {
             instances: Some(vec![InstanceState {
                 index: 0,
                 pid: Some(42),
+                pid_starttime: None,
                 status: InstanceStatus::Running,
                 restart_count: 0,
                 last_exit_code: None,
