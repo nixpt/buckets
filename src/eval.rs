@@ -304,6 +304,38 @@ mod tests {
         );
     }
 
+    /// Invalid UTF-8 on the child's stdout and stderr must NOT silently
+    /// drop the surrounding text: the capture is bytes → from_utf8_lossy,
+    /// so the valid parts survive (bad bytes become U+FFFD) and the JSON
+    /// evidence record stays complete (usagi's blocking finding on
+    /// ebed5ae8: read_to_string errored on the bad byte and the whole
+    /// capture came back empty with passed:true).
+    #[test]
+    fn stdout_stderr_capture_survives_invalid_utf8() {
+        if !bwrap_on_path() {
+            return;
+        }
+        // \377 is one raw 0xFF byte in both streams, wrapped in valid text.
+        let dir = project_dir();
+        let r = run_with(
+            sandbox::try_sandboxed_command,
+            dir.path(),
+            &[],
+            &sh_args("printf 'out:abc\\377def\\n'; echo out-good; printf 'err:abc\\377def\\n' >&2; echo err-good >&2"),
+            30,
+            &Config::default(),
+            &Index::builtin(),
+        )
+        .unwrap();
+        assert!(r.passed, "{r:?}");
+        // Valid text present in both captures…
+        assert!(r.stdout.contains("out-good"), "stdout lost text: {r:?}");
+        assert!(r.stderr.contains("err-good"), "stderr lost text: {r:?}");
+        // …including around the bad byte, which shows up as U+FFFD.
+        assert!(r.stdout.contains("out:abc\u{FFFD}def"), "stdout: {r:?}");
+        assert!(r.stderr.contains("err:abc\u{FFFD}def"), "stderr: {r:?}");
+    }
+
     /// A missing sandbox backend → refusal: non-zero exit (an Err), and
     /// the command is NOT run.
     #[test]
