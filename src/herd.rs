@@ -670,6 +670,34 @@ pub fn send_control(herds_dir: &Path, name: &str, req: HerdRequest) -> Result<He
 
 // ── Spawn helper ──────────────────────────────────────────────────────────────
 
+/// `/proc/<pid>/stat` field 22: the process's start time, in clock ticks
+/// since boot. Kernel-maintained and monotonic per boot — a recycled pid
+/// always has a different start time than the process that held it before.
+pub fn proc_starttime(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm (field 2) is parenthesised and may itself contain spaces or
+    // parentheses — everything after the LAST ')' is the fixed-format
+    // fields 3..=N, whitespace-separated. starttime is field 22.
+    let after_comm = stat.rsplit_once(')')?.1;
+    after_comm.split_whitespace().nth(22 - 3)?.parse().ok()
+}
+
+/// Kill a herd's replicas straight from its persisted state, without the
+/// control socket (the deploy process is gone). Called by `herd stop`'s
+/// orphan fallback.
+pub fn orphan_stop_from_state(herds_dir: &Path, name: &str, state: &HerdState) -> Result<()> {
+    for inst in &state.instances {
+        if let Some(pid) = inst.pid {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+            eprintln!("  ✓ replica {} (PID {pid}) terminated", inst.index);
+        }
+    }
+    fs::remove_dir_all(herds_dir.join(name))?;
+    Ok(())
+}
+
+// ── Spawn helpers (replica processes) ────────────────────────────────────────
+
 fn spawn_replica(spec: &HerdSpec, idx: u32) -> Result<Child> {
     let mut cmd = Command::new("buckets");
     cmd.arg("run");
@@ -738,6 +766,87 @@ pub fn list_all(herds_dir: &Path) -> Vec<HerdInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kill and reap on drop, so a failing assertion can't leave strays.
+    struct KillOnDrop(Option<Child>);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if let Some(child) = &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// BUCKETS-10: `herd stop`'s orphan fallback verifies recorded pids
+    /// before signalling them. A recycled pid — now owned by an unrelated
+    /// process — must NOT be signalled; a genuine replica must still be.
+    #[test]
+    fn orphan_stop_from_state_verifies_pids_before_signalling() {
+        // A "genuine" replica: spawned here, its real start time recorded.
+        let mut genuine = KillOnDrop(Some(Command::new("sleep").arg("30").spawn().unwrap()));
+        let genuine_pid = genuine.0.as_ref().unwrap().id();
+        let genuine_start = proc_starttime(genuine_pid).expect("genuine /proc/<pid>/stat");
+
+        // The pid that "recycled": an unrelated process whose recorded start
+        // time is one tick off — as if the replica that was recorded had died
+        // and the kernel had reused its pid for this process.
+        let mut unrelated = KillOnDrop(Some(Command::new("sleep").arg("30").spawn().unwrap()));
+        let unrelated_pid = unrelated.0.as_ref().unwrap().id();
+        let unrelated_start = proc_starttime(unrelated_pid).expect("unrelated /proc/<pid>/stat");
+        let stale_start = unrelated_start.saturating_sub(1);
+        assert_ne!(stale_start, unrelated_start);
+
+        let dir = tempfile::tempdir().unwrap();
+        let herds_dir = dir.path().join("herds");
+        fs::create_dir_all(herds_dir.join("stale")).unwrap();
+        // Written as raw JSON (not structs) so it doubles as a compatibility
+        // check: an old state.json without the pid_starttime keys, and one
+        // with them, both parse.
+        let state_json = serde_json::json!({
+            "spec": {
+                "name": "stale", "bucket": "node@20", "command": [], "env": {},
+                "replicas": 2, "net": null, "check_interval_secs": 5,
+                "restart": "on_failure", "max_restarts": 10
+            },
+            "instances": [
+                { "index": 0, "pid": unrelated_pid, "status": "running",
+                  "restart_count": 0, "last_exit_code": null,
+                  "pid_starttime": stale_start },
+                { "index": 1, "pid": genuine_pid, "status": "running",
+                  "restart_count": 0, "last_exit_code": null,
+                  "pid_starttime": genuine_start }
+            ]
+        });
+        let state_path = herds_dir.join("stale").join("state.json");
+        fs::write(&state_path, state_json.to_string()).unwrap();
+        let state: HerdState =
+            serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+
+        orphan_stop_from_state(&herds_dir, "stale", &state).unwrap();
+        // Give the kernel a beat to deliver SIGTERM.
+        std::thread::sleep(Duration::from_millis(50));
+
+        // The unrelated process owning the recycled pid was NOT signalled —
+        // still alive (try_wait: None means the child has not exited).
+        assert!(
+            unrelated.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+            "unrelated process owning a recycled pid was signalled"
+        );
+        // Belt and braces: it is alive in /proc with its original start time.
+        assert_eq!(proc_starttime(unrelated_pid), Some(unrelated_start));
+        // The genuine replica WAS stopped: killed by SIGTERM (15).
+        let mut child = genuine.0.take().unwrap();
+        let status = child.wait().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGTERM),
+            "genuine replica was not SIGTERMed: {status:?}"
+        );
+        // The state dir is removed, as `herd stop` does.
+        assert!(!state_path.exists());
+    }
 
     #[test]
     fn herd_spec_defaults() {
