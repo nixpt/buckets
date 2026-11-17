@@ -134,14 +134,18 @@ fn run_with(
     let deadline = started + Duration::from_secs(timeout_secs);
     // Drain both pipes on threads so a chatty child can't fill its pipe
     // buffer and deadlock the deadline loop (same pattern as sandbox.rs's
-    // own live-test helper).
-    fn drain(r: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    // own live-test helper). Read BYTES to EOF, then decode lossily:
+    // read_to_string errors on invalid UTF-8 and the whole capture would
+    // be lost — the evidence record must keep the valid text around bad
+    // bytes (U+FFFD), and read_to_end keeps draining to EOF so the child
+    // never gets EPIPE.
+    fn drain(r: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
-            let mut s = String::new();
+            let mut buf = Vec::new();
             if let Some(mut r) = r {
-                let _ = r.read_to_string(&mut s);
+                let _ = r.read_to_end(&mut buf);
             }
-            s
+            buf
         })
     }
     let out_t = drain(child.stdout.take());
@@ -164,8 +168,8 @@ fn run_with(
         exit_code: output.status.code(),
         timed_out,
         duration_ms: started.elapsed().as_millis(),
-        stdout: out_t.join().unwrap_or_default(),
-        stderr: err_t.join().unwrap_or_default(),
+        stdout: String::from_utf8_lossy(&out_t.join().unwrap_or_default()).into_owned(),
+        stderr: String::from_utf8_lossy(&err_t.join().unwrap_or_default()).into_owned(),
     })
 }
 
