@@ -440,6 +440,17 @@ mod tests {
         assert!(comps.contains(&"curl"));
     }
 
+    /// BUCKETS-8: python.org's bottle links OpenSSL 1.1 from its _ssl and
+    /// _hashlib extension modules — pinned ^1.1, like nodejs.org's, because
+    /// openssl 3.x ships .so.3 which _ssl cannot load. The table is keyed
+    /// by project name; alias resolution happens in collect_transitive_reqs
+    /// (covered by resolve::tests::python_only_bucket_pulls_openssl_companion).
+    #[test]
+    fn test_companions_python() {
+        let idx = Index::builtin();
+        assert_eq!(idx.companions("python.org"), &["openssl@^1.1"]);
+    }
+
     #[test]
     fn test_companions_unknown() {
         let idx = Index::builtin();
