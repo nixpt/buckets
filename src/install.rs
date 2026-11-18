@@ -456,19 +456,7 @@ pub fn install(config: &Config, pkg: &Package) -> Result<Installation> {
     archive.unpack(tempdir.path())
         .with_context(|| format!("Failed to extract bottle for {url}"))?;
 
-    // Discover the actual extraction root (pkgx bottles are nested)
-    let extracted_root = find_extraction_root(tempdir.path(), &pkg.project, &version_str);
-
-    // Atomic rename the extracted content to the target cache directory
-    if target_dir.exists() {
-        fs::remove_dir_all(&target_dir)?;
-    }
-
-    if extracted_root != tempdir.path() {
-        rename_contents(&extracted_root, &target_dir)?;
-    } else {
-        fs::rename(&extracted_root, &target_dir)?;
-    }
+    place_extracted_bottle(tempdir.path(), &pkg.project, &version_str, &target_dir)?;
 
     // Create version symlinks (v*, v<major>, v<major.minor>)
     cellar::update_version_symlinks(config, &pkg.project, &pkg.version)?;
@@ -525,6 +513,21 @@ fn find_extraction_root(temp_dir: &Path, project: &str, version: &str) -> PathBu
     temp_dir.to_path_buf()
 }
 
+/// Move an unpacked bottle from `temp_dir` into `target_dir`.
+pub(crate) fn place_extracted_bottle(temp_dir: &Path, project: &str, version: &str, target_dir: &Path) -> Result<()> {
+    // Stub (BUCKETS-19 red): the old placement, unchanged.
+    let extracted_root = find_extraction_root(temp_dir, project, version);
+    if target_dir.exists() {
+        fs::remove_dir_all(target_dir)?;
+    }
+    if extracted_root != temp_dir {
+        rename_contents(&extracted_root, target_dir)?;
+    } else {
+        fs::rename(&extracted_root, target_dir)?;
+    }
+    Ok(())
+}
+
 /// Rename contents of `src` into `dst`, creating dst if needed.
 fn rename_contents(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
@@ -543,6 +546,48 @@ fn rename_contents(src: &Path, dst: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pkgx bottle unpacks as `{project}/v{version}/...`. BUCKETS-19:
+    /// library-only bottles (mpdecimal, x.org/*, zlib.net) have no `bin/`;
+    /// they must land flat in the version dir (where RPATHs point) and
+    /// count as installed, or every run nests and re-downloads them.
+    fn fake_bottle(project: &str, version: &str, with_bin: bool) -> tempfile::TempDir {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join(project).join(format!("v{version}"));
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib/libmpdec.so.3"), b"elf").unwrap();
+        if with_bin {
+            fs::create_dir_all(root.join("bin")).unwrap();
+        }
+        t
+    }
+
+    #[test]
+    fn library_only_bottle_lands_flat_and_counts_as_installed() {
+        let unpacked = fake_bottle("bytereef.org/mpdecimal", "2.5.1", false);
+        let cache = tempfile::tempdir().unwrap();
+        let config = Config { cache_dir: cache.path().to_path_buf(), ..Config::default() };
+        let target = config.version_dir("bytereef.org/mpdecimal", "2.5.1");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        place_extracted_bottle(unpacked.path(), "bytereef.org/mpdecimal", "2.5.1", &target).unwrap();
+        assert!(target.join("lib/libmpdec.so.3").is_file(), "library must sit at <version dir>/lib");
+        assert!(!target.join("bytereef.org").exists(), "no nested project dir");
+        let v = semver::Version::parse("2.5.1").unwrap();
+        assert!(cellar::is_installed(&config, "bytereef.org/mpdecimal", &v), "library-only bottle must count as installed");
+    }
+
+    #[test]
+    fn bottle_with_bin_still_lands_flat() {
+        let unpacked = fake_bottle("tcl-lang.org", "8.6.18", true);
+        let cache = tempfile::tempdir().unwrap();
+        let config = Config { cache_dir: cache.path().to_path_buf(), ..Config::default() };
+        let target = config.version_dir("tcl-lang.org", "8.6.18");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        place_extracted_bottle(unpacked.path(), "tcl-lang.org", "8.6.18", &target).unwrap();
+        assert!(target.join("bin").is_dir() && target.join("lib/libmpdec.so.3").is_file());
+        let v = semver::Version::parse("8.6.18").unwrap();
+        assert!(cellar::is_installed(&config, "tcl-lang.org", &v));
+    }
 
     #[test]
     fn test_install_path_cargo() {
