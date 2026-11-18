@@ -1,0 +1,108 @@
+@caison { version: "1.0" }
+# buckets milestones. Written by kuina (borderland lane) on 2026-11-18 from ROADMAP.md, STATE.md, ticket files
+# BUCKETS-1..17 and merged PRs (#3..#20). ROADMAP.md keeps the prose; this file keeps the sequence.
+
+schema: "milestones/1"
+
+project: {
+  name: "buckets"
+  kind: "repo"
+  lifecycle: "active" @verified { at: "2026-11-18", by: "kuina" }
+  lifecycle_since: "2026-07-10"
+  home: "zorro"
+  ticket_prefix: "BUCKETS"
+  root: "2b103e015dcc53f00f435db8d432f47723de200c"
+  summary: "M0, M1, M3, M4, M5 shipped; M2 (PRoot) is code-complete but its Termux/Android gate (BUCKETS-3) is still open; November work is sandbox and correctness hardening. No version tag yet."
+  north_star: "a complete ephemeral isolated execution engine for AI agents: sandboxed environments, multi-source package resolution (pkgx, cargo, pypi, npm, pantries), shipped from one standalone crate"
+  stewards: ["arisu", "kuina"]
+  evidence: {
+    default_branch: "master"
+  }
+}
+
+milestones: [
+  {
+    id: "M0"
+    title: "Core CLI and pkgx (run / shell / env / info)"
+    status: "done" @verified { at: "2026-11-18", by: "kuina" }
+    done_at: "2026-07-10"
+    version: "0.1.0"
+    done_when: [
+      { claim: "resolver module present", check: { kind: "file", path: "src/resolve.rs" } },
+    ]
+    notes: "ROADMAP.md: M0 + M1 map to v0.1.0, but no tag exists yet."
+  },
+  {
+    id: "M1"
+    title: "Sandbox and extensions (bubblewrap, worktrees, GUI, site sandboxing)"
+    status: "done" @verified { at: "2026-11-18", by: "kuina" }
+    depends_on: ["M0"]
+    done_when: [
+      { claim: "sandbox, gui, site and worktree modules present", check: { kind: "file", path: "src/sandbox.rs" } },
+    ]
+  },
+  {
+    id: "M2"
+    title: "PRoot portability (Termux / Android)"
+    status: "blocked" @verified { at: "2026-11-18", by: "kuina" }
+    blocked_by: "BUCKETS-3 needs a real Termux/Android node (phone-claude) to verify PRoot"
+    tickets: ["BUCKETS-1", "BUCKETS-2", "BUCKETS-3"]
+    depends_on: ["M1"]
+    version: "0.2.0"
+    done_when: [
+      { claim: "BUCKETS-1 and BUCKETS-2 (spike, ProotBackend) done", check: { kind: "tickets", ids: ["BUCKETS-1", "BUCKETS-2"], status: "Done" } },
+      { claim: "PRoot verified on a real Termux/Android node (BUCKETS-3)", check: { kind: "tickets", ids: ["BUCKETS-3"], status: "Done" } },
+    ]
+    notes: "The only open exit criterion is BUCKETS-3 (Backlog; validate_android.sh exists in the repo root). ROADMAP.md names it the remaining M2 gate."
+  },
+  {
+    id: "M3"
+    title: "Cargo spec type (cargo:, path:, pantry overrides, Bucketfile engine)"
+    status: "done" @verified { at: "2026-11-18", by: "kuina" }
+    tickets: ["BUCKETS-4", "BUCKETS-5", "BUCKETS-8", "BUCKETS-9"]
+    depends_on: ["M1"]
+    version: "0.3.0"
+    done_when: [
+      { claim: "M3 tickets done", check: { kind: "tickets", status: "Done" } },
+    ]
+  },
+  {
+    id: "M4"
+    title: "Fleet concurrency (cellar locks, herd, herd IPC, clean)"
+    status: "done" @verified { at: "2026-11-18", by: "kuina" }
+    tickets: ["BUCKETS-6", "BUCKETS-7", "BUCKETS-11", "BUCKETS-12", "BUCKETS-14"]
+    depends_on: ["M3"]
+    version: "0.4.0"
+    done_when: [
+      { claim: "locks, herd and IPC tickets done", check: { kind: "tickets", ids: ["BUCKETS-6", "BUCKETS-7", "BUCKETS-11", "BUCKETS-14"], status: "Done" } },
+      { claim: "herd IPC hot-scale merged (PR #3)", check: { kind: "merged", pr: "3" } },
+    ]
+    notes: "ROADMAP.md also lists a buck-net expose_port live test as an M4 gap; that gap is not evidenced closed; status stays done. BUCKETS-12 ticket status reads 'Done - foreman-verified', so the exact-match check omits it."
+  },
+  {
+    id: "M5"
+    title: "Isolated networks and language registries (buck-net, pypi:, npm:)"
+    status: "done" @verified { at: "2026-11-18", by: "kuina" }
+    tickets: ["BUCKETS-10", "BUCKETS-15", "BUCKETS-16"]
+    depends_on: ["M3"]
+    done_when: [
+      { claim: "buck-net and registry resolvers done", check: { kind: "tickets", ids: ["BUCKETS-10", "BUCKETS-15"], status: "Done" } },
+      { claim: "pypi + npm resolvers merged (PR #4)", check: { kind: "merged", pr: "4" } },
+    ]
+    notes: "Phase M5 appears only in the ticket files, not in ROADMAP.md. BUCKETS-16 (sched builds) reads 'done' in a different field format."
+  },
+  {
+    id: "M6"
+    title: "Sandbox and correctness hardening (zandbox fail-closed, eval, python.org companions)"
+    status: "active" ~0.7 @verified { at: "2026-11-18", by: "kuina" }
+    started_at: "2026-10-31"
+    tickets: ["BUCKETS-17"]
+    depends_on: ["M4"]
+    done_when: [
+      { claim: "fail-closed bwrap hardening merged (PR #9)", check: { kind: "merged", pr: "9" } },
+      { claim: "eval rewrite on the sandbox API merged (PR #18)", check: { kind: "merged", pr: "18" } },
+      "open PR #14 (fail closed when memory.swap.max is missing) merges",
+    ]
+    notes: "Not a ROADMAP.md milestone: it names the November work (PRs #5, #9, #15-#18, #20). BUCKETS-17 ticket still says In review though PR #9 merged; several PR titles reuse BUCKETS ids (8, 10, 12) with different meaning from the ticket files."
+  },
+]
