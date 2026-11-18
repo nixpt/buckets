@@ -462,7 +462,20 @@ mod tests {
     #[test]
     fn test_companions_python() {
         let idx = Index::builtin();
-        assert_eq!(idx.companions("python.org"), &["openssl@^1.1"]);
+        assert_eq!(
+            idx.companions("python.org"),
+            &["openssl@^1.1", "invisible-island.net/ncurses@^6", "bytereef.org/mpdecimal@^2.5", "tcl-lang.org@~8.6"]
+        );
+    }
+
+    /// BUCKETS-19: tk links libX11 + libz, libX11 links libxcb, libxcb links
+    /// libXau + libXdmcp (readelf NEEDED on the real bottles).
+    #[test]
+    fn test_companions_tk_x11_chain() {
+        let idx = Index::builtin();
+        assert_eq!(idx.companions("tcl-lang.org"), &["x.org/x11@^1", "zlib.net@^1"]);
+        assert_eq!(idx.companions("x.org/x11"), &["x.org/xcb@^1"]);
+        assert_eq!(idx.companions("x.org/xcb"), &["x.org/xau@^1", "x.org/xdmcp@^1"]);
     }
 
     #[test]

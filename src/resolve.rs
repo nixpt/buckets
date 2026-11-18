@@ -319,6 +319,31 @@ mod tests {
         assert_eq!(openssl.constraint.to_string(), "^1.1");
     }
 
+    /// BUCKETS-19: _curses (libtinfow.so.6), _decimal (libmpdec.so.3) and
+    /// _tkinter (libtk8.6.so + libtcl8.6.so, then X11 + zlib) resolve in a
+    /// python-only bucket, each pinned to the major that ships the soname.
+    #[test]
+    fn python_only_bucket_pulls_curses_decimal_tk_companions() {
+        let index = Index::builtin();
+        let reqs = collect_transitive_reqs(&["python@3.11".to_string()], &index).unwrap();
+        for (project, constraint) in [
+            ("invisible-island.net/ncurses", "^6"),
+            ("bytereef.org/mpdecimal", "^2.5"),
+            ("tcl-lang.org", "~8.6"),
+            ("x.org/x11", "^1"),
+            ("x.org/xcb", "^1"),
+            ("x.org/xau", "^1"),
+            ("x.org/xdmcp", "^1"),
+            ("zlib.net", "^1"),
+        ] {
+            let r = reqs
+                .iter()
+                .find(|r| r.project == project)
+                .unwrap_or_else(|| panic!("python.org must resolve {project} as a companion"));
+            assert_eq!(r.constraint.to_string(), constraint, "{project}");
+        }
+    }
+
     #[test]
     fn test_resolve_version_constraint_mismatch() {
         let config = Config::default();
