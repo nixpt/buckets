@@ -49,13 +49,23 @@ impl Index {
         // "openssl" latest — 3.x openssl ships .so.3, not .so.1.1, so an
         // unpinned companion would still leave python broken.
         //
-        // Also missing from the bottle but deliberately NOT companions
-        // here (each needs its own bottle verified — BUCKETS-8 ldd sweep):
-        // libtinfow.so.6 (_curses/_curses_panel, ncurses), libmpdec.so.3
-        // (_decimal, mpdecimal), libtk8.6.so (_tkinter, tk). `import ssl`
-        // and pip/HTTPS are the blocker; curses/tkinter stay broken until
-        // those bottles are verified.
-        companions.insert("python.org", vec!["openssl@^1.1"]);
+        // The rest of the BUCKETS-8 ldd sweep (all 75 lib-dynload modules),
+        // closed in BUCKETS-19 against the real pkgx bottles. Each pin is
+        // the line that ships the soname python links, and matches the
+        // RPATH pkgx built python with (`invisible-island.net/ncurses/v6`,
+        // `bytereef.org/mpdecimal/v2`, `tcl-lang.org/v8`):
+        // - _curses/_curses_panel: libncursesw/libpanelw/libtinfow.so.6,
+        //   ncurses ^6 (every 6.x ships .so.6);
+        // - _decimal: libmpdec.so.3, mpdecimal ^2.5. Not latest: 4.x ships
+        //   libmpdec.so.4 (and 2.4 ships .so.2), and without it CPython
+        //   silently falls back to the slow pure-Python _pydecimal;
+        // - _tkinter: libtk8.6.so + libtcl8.6.so, tcl-lang.org ~8.6 (one
+        //   bottle ships both). Not ^8 / latest: 9.x ships libtcl9.0.
+        //   tk's own links (X11, zlib) are tcl-lang.org's companions below.
+        companions.insert(
+            "python.org",
+            vec!["openssl@^1.1", "invisible-island.net/ncurses@^6", "bytereef.org/mpdecimal@^2.5", "tcl-lang.org@~8.6"],
+        );
 
         // rust-lang.org's bottle ships rustc/rustfmt/clippy/rust-analyzer/
         // rustdoc — but NOT cargo (or rustup). Verified live: `bin/` has no
@@ -377,6 +387,17 @@ impl Index {
         aliases.insert("icu4c", "unicode.org");
         provides.insert("unicode.org", vec!["icu4c"]);
 
+        // tk's link chain (readelf NEEDED on the pkgx bottles, BUCKETS-19):
+        // libtk8.6.so -> libX11.so.6 + libz.so.1; libX11 -> libxcb.so.1;
+        // libxcb -> libXau.so.6 + libXdmcp.so.6; those two need only libc.
+        // Every soname is stable across the pinned major. These are the
+        // X11 *client* libraries only: `import tkinter` loads with them,
+        // and opening a Tk window still needs a display (an X server or
+        // Xwayland), which buckets does not provide.
+        companions.insert("tcl-lang.org", vec!["x.org/x11@^1", "zlib.net@^1"]);
+        companions.insert("x.org/x11", vec!["x.org/xcb@^1"]);
+        companions.insert("x.org/xcb", vec!["x.org/xau@^1", "x.org/xdmcp@^1"]);
+
         Self { aliases, provides, companions }
     }
 
@@ -462,7 +483,20 @@ mod tests {
     #[test]
     fn test_companions_python() {
         let idx = Index::builtin();
-        assert_eq!(idx.companions("python.org"), &["openssl@^1.1"]);
+        assert_eq!(
+            idx.companions("python.org"),
+            &["openssl@^1.1", "invisible-island.net/ncurses@^6", "bytereef.org/mpdecimal@^2.5", "tcl-lang.org@~8.6"]
+        );
+    }
+
+    /// BUCKETS-19: tk links libX11 + libz, libX11 links libxcb, libxcb links
+    /// libXau + libXdmcp (readelf NEEDED on the real bottles).
+    #[test]
+    fn test_companions_tk_x11_chain() {
+        let idx = Index::builtin();
+        assert_eq!(idx.companions("tcl-lang.org"), &["x.org/x11@^1", "zlib.net@^1"]);
+        assert_eq!(idx.companions("x.org/x11"), &["x.org/xcb@^1"]);
+        assert_eq!(idx.companions("x.org/xcb"), &["x.org/xau@^1", "x.org/xdmcp@^1"]);
     }
 
     #[test]
