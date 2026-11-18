@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 mod cellar;
 mod config;
 mod env;
+mod eval;
 mod gui;
 mod index;
 mod install;
@@ -152,6 +153,26 @@ enum Command {
         /// Output as JSON instead of shell exports
         #[arg(short, long)]
         json: bool,
+    },
+
+    /// Run a practice evaluation in a fresh, network-disabled sandbox.
+    ///
+    /// Usage: buckets eval --project ./work rust@latest -- cargo test
+    Eval {
+        /// Writable project directory visible inside the sandbox.
+        #[arg(long)]
+        project: String,
+
+        /// Hard wall-clock limit in seconds.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+
+        /// Runtime spec(s), for example `rust@latest` or `python@3.11`.
+        specs: Vec<String>,
+
+        /// Command to evaluate, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
     },
 
     /// Show resolution info for a spec (no installation).
@@ -726,6 +747,22 @@ fn main() -> Result<()> {
             cmd_shell(&specs, shell.as_deref(), no_sandbox, &sandbox, &config, &index)
         }
         Command::Env { specs, json } => cmd_env(&specs, json, &config, &index),
+        Command::Eval { project, timeout, specs, command } => {
+            let result = eval::run(
+                Path::new(&project),
+                &specs,
+                &command,
+                timeout,
+                &config,
+                &index,
+            )?;
+            println!("{}", serde_json::to_string(&result)?);
+            if result.passed {
+                Ok(())
+            } else {
+                anyhow::bail!("evaluation failed")
+            }
+        }
         Command::Info { specs } => cmd_info(&specs, &config, &index),
         Command::List => cmd_list(&config),
         Command::Clean { spec, all, older_than, dry_run } => {
