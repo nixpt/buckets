@@ -503,7 +503,9 @@ pub fn install_multi(config: &Config, packages: &[Package]) -> Result<Vec<Instal
 /// so we need to descend into that to find the real content root.
 fn find_extraction_root(temp_dir: &Path, project: &str, version: &str) -> PathBuf {
     let nested = temp_dir.join(project).join(format!("v{version}"));
-    if nested.join("bin").exists() {
+    // The pkgx layout itself, with or without bin/: library-only bottles
+    // (mpdecimal, x.org/*, zlib.net) have none (BUCKETS-19).
+    if nested.is_dir() {
         return nested;
     }
     let nested2 = temp_dir.join(project);
@@ -515,7 +517,6 @@ fn find_extraction_root(temp_dir: &Path, project: &str, version: &str) -> PathBu
 
 /// Move an unpacked bottle from `temp_dir` into `target_dir`.
 pub(crate) fn place_extracted_bottle(temp_dir: &Path, project: &str, version: &str, target_dir: &Path) -> Result<()> {
-    // Stub (BUCKETS-19 red): the old placement, unchanged.
     let extracted_root = find_extraction_root(temp_dir, project, version);
     if target_dir.exists() {
         fs::remove_dir_all(target_dir)?;
@@ -525,6 +526,10 @@ pub(crate) fn place_extracted_bottle(temp_dir: &Path, project: &str, version: &s
     } else {
         fs::rename(&extracted_root, target_dir)?;
     }
+    // Mark it installed: `cellar::is_installed` otherwise keys on bin/,
+    // which library-only bottles lack, so they would re-download every run.
+    fs::write(target_dir.join(cellar::INSTALLED_MARKER), b"")
+        .with_context(|| format!("Failed to mark {project} v{version} installed"))?;
     Ok(())
 }
 
